@@ -213,7 +213,6 @@ button.nav-item:hover:not(.active) { color:var(--green); }
 .claims-sort:focus { outline:2px solid #cfe7dc; border-color:var(--green); }
 .claims-export { flex:none; height:44px; }
 .claims-pending-chip { color:#75531e; background:#f4e5c7; }
-.claims-rejected-chip { color:#7a2926; background:#f7e3e1; }
 .claims-type-row { display:flex; gap:14px; margin-top:8px; color:#8b9893; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.4px; }
 .claims-dashboard { display:grid; grid-template-columns:1fr 1fr; gap:18px; align-items:start; }
 .claims-card-placeholder { visibility:hidden; pointer-events:none; }

@@ -2490,7 +2490,6 @@ function UserClaimsDashboard({ accounts }: { accounts: PublicAccount[] }) {
                   <span className="step-count">{s.total} claim{s.total === 1 ? "" : "s"}</span>
                   <span className="step-count">Avg score {s.avgScore}</span>
                   {s.pendingCount > 0 && <span className="step-count claims-pending-chip">{s.pendingCount} pending</span>}
-                  {s.rejectedCount > 0 && <span className="step-count claims-rejected-chip">{Math.round((s.rejectedCount / s.total) * 100)}% rejected</span>}
                 </div>
               </div>
               <div className="claims-tier-row">
