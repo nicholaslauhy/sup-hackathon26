@@ -1131,7 +1131,7 @@ function tsvToClientLines(tsv: unknown, imageWidth: number, imageHeight: number)
   const rows = tsv
     .split(/\r?\n/)
     .map((row) => row.trimEnd())
-    .filter((line): line is ClientOcrLine => line !== null);
+    .filter(Boolean);
 
   if (rows.length < 2) return [];
 
