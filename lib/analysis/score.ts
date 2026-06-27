@@ -13,10 +13,17 @@ export function scoreFromFlags(flags: Flag[]): number {
   // Some checks describe the same underlying arithmetic discrepancy. Count
   // only the strongest flag in each correlation group so one bad total does
   // not inflate the score twice.
-  const correlationGroup = (id: string) => {
-    if (id === "purchase-arithmetic" || id === "purchase-tax") return "purchase-money";
-    return id;
-  };
+  // The generic `arithmetic` check and the claim-specific arithmetic/tax checks
+  // (only one claim type runs per receipt) all describe the same underlying
+  // money discrepancy, so collapse them into one group and count the strongest.
+  const MONEY_IDS = new Set([
+    "arithmetic",
+    "purchase-arithmetic",
+    "purchase-tax",
+    "medical-arithmetic",
+    "grab-arithmetic",
+  ]);
+  const correlationGroup = (id: string) => (MONEY_IDS.has(id) ? "money" : id);
   const strongest = new Map<string, Severity>();
   for (const flag of flags.filter((item) => item.status === "triggered")) {
     const group = correlationGroup(flag.id);

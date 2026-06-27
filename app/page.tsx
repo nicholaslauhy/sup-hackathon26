@@ -185,8 +185,46 @@ function isArithmeticFlag(flag: Flag | null) {
   return text.includes("arithmetic") || text.includes("subtotal") || text.includes("total");
 }
 
+// Canonical names from the README "Fraud checks" table, keyed by flag id. The
+// analysis layer varies each flag's `title` by outcome (and the VLM adds
+// claim-specific flags); the UI must show only these checks, each under its one
+// fixed table name regardless of pass/fail/pending status.
+const CANONICAL_FLAG_TITLES: Record<string, string> = {
+  "is-receipt": "Submitted file is a receipt",
+  duplicate: "Duplicate / near-duplicate submission",
+  "exif-editor": "Edited in image software",
+  "exif-camera": "Camera metadata present",
+  "pdf-producer": "Created with image/design software",
+  "pdf-modified": "Modified after creation",
+  arithmetic: "Line-item arithmetic",
+  "round-numbers": "Suspiciously round amounts",
+  "font-consistency": "Font & spacing consistency",
+  "physical-alteration": "Scratches & physical alteration",
+};
+
+// The authentic-reference flag id is claim-scoped (e.g. "medical-reference").
+function canonicalFlagTitle(flag: Flag): string | null {
+  if (flag.id in CANONICAL_FLAG_TITLES) return CANONICAL_FLAG_TITLES[flag.id];
+  if (flag.id.endsWith("-reference")) return "Authentic reference comparison";
+  return null;
+}
+
+// A flag is shown only when it maps to a row in the Fraud checks table. This
+// hides the claim-specific checks the VLM adds (identifiers, timing, location,
+// tax, service-kind, claim-specific arithmetic).
+function isCanonicalFlag(flag: Flag): boolean {
+  return canonicalFlagTitle(flag) !== null;
+}
+
+// Canonical, table-aligned flags in display order, ready to render.
+function visibleFlags(flags: Flag[]): Flag[] {
+  return flags
+    .filter(isCanonicalFlag)
+    .sort((a, b) => statusOrder[a.status] - statusOrder[b.status]);
+}
+
 function displayFlagTitle(flag: Flag) {
-  return flag.title;
+  return canonicalFlagTitle(flag) ?? flag.title;
 }
 
 function parseMoneyAmount(value: unknown) {
@@ -269,6 +307,42 @@ function displayFlagExplanation(flag: Flag) {
   return flag.explanation;
 }
 
+// Which engine decided a flag. AI-driven checks (the vision forensics, and the
+// arithmetic / round-amount checks when the AI receipt model supplied the
+// figures) are attributed to the OpenAI model and the explanation above is the
+// model's own curated assessment. Every other check is deterministic, so we name
+// the specific external library that produced the decision.
+function flagDecisionSource(flag: Flag): { ai: boolean; tool: string } {
+  if (flag.id === "font-consistency" || flag.id === "physical-alteration") {
+    const model = isRecord(flag.evidence) && typeof flag.evidence.model === "string" ? flag.evidence.model : "gpt-4o";
+    return { ai: true, tool: `OpenAI vision model (${model})` };
+  }
+  if (flag.id === "arithmetic" || flag.id === "round-numbers") {
+    const engine = isRecord(flag.evidence) ? flag.evidence.decisionEngine : undefined;
+    if (engine === "ai-receipt") return { ai: true, tool: "OpenAI receipt model (gpt-5-mini)" };
+    if (engine === "pdfjs") return { ai: false, tool: "pdfjs-dist (embedded PDF text layer)" };
+    return { ai: false, tool: "tesseract.js (OCR)" };
+  }
+  if (flag.id === "duplicate") return { ai: false, tool: "SHA-256 content hashing + perceptual image hashing" };
+  if (flag.id.endsWith("-reference")) return { ai: false, tool: "content & perceptual hash comparison against the reference bucket" };
+  if (flag.id === "exif-editor" || flag.id === "exif-camera") return { ai: false, tool: "exifr (EXIF metadata reader)" };
+  if (flag.id === "pdf-producer" || flag.id === "pdf-modified") return { ai: false, tool: "pdf-lib (PDF metadata reader)" };
+  if (flag.id === "is-receipt") return { ai: false, tool: "tesseract.js / pdfjs text extraction + sharp document-shape analysis" };
+  return { ai: false, tool: "an external tool" };
+}
+
+function flagDecisionMessage(flag: Flag): string {
+  const { ai, tool } = flagDecisionSource(flag);
+  if (flag.status === "pending") {
+    return ai
+      ? `AI not yet run — awaiting the ${tool}.`
+      : `Not yet determined — the external tool (${tool}) could not read enough to decide.`;
+  }
+  return ai
+    ? `AI decision — assessed by the ${tool} (the explanation above is the model's own reasoning).`
+    : `No AI used — an external tool was used: ${tool}.`;
+}
+
 function ScoreMeter({ score, tier }: { score: number; tier: Tier }) {
   return <div className="score-meter">
     <div className="score-track"><div className={`score-fill ${tier}`} style={{ width: `${score}%` }} /></div>
@@ -288,6 +362,7 @@ function FlagItem({ flag, selected = false, onSelect }: { flag: Flag; selected?:
         <span className={`flag-severity ${flag.severity}`}>{flag.severity}</span>
       </span>
       <span className="flag-copy">{displayFlagExplanation(flag)}</span>
+      <span className={`flag-decision-source ${flagDecisionSource(flag).ai ? "ai" : "external"}`}>{flagDecisionMessage(flag)}</span>
       <span className="flag-location-box">
         <span>Where to check</span>
         <strong>{regionCount > 0 ? visualRegionLabel(flag, regionCount) : flagLocation(flag)}</strong>
@@ -303,7 +378,7 @@ function ResultSummary({ receipt, onDecision, onReset }: { receipt: ReceiptRecor
   const [busy, setBusy] = useState<"authentic" | "rejected" | null>(null);
   const [error, setError] = useState("");
   const result: AnalysisResult = receipt.result;
-  const flags = [...result.flags].sort((a, b) => statusOrder[a.status] - statusOrder[b.status]);
+  const flags = visibleFlags(result.flags);
   const meta = tierMeta[result.tier];
 
   async function decide(decision: "authentic" | "rejected") {
@@ -805,7 +880,7 @@ function ReceiptDetailModal({ receipt, canEdit, onClose, onChange, onDeleted }: 
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [error, setError] = useState("");
   const result: AnalysisResult = receipt.result;
-  const flags = [...result.flags].sort((a, b) => statusOrder[a.status] - statusOrder[b.status]);
+  const flags = visibleFlags(result.flags);
   const meta = tierMeta[result.tier];
   const [selectedFlagId, setSelectedFlagId] = useState<string | null>(() => flags.find(hasVisualEvidence)?.id ?? flags[0]?.id ?? null);
   const selectedFlag = flags.find((flag) => flag.id === selectedFlagId) ?? flags[0] ?? null;
