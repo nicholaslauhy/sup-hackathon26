@@ -1003,7 +1003,7 @@ function evidenceValue(value: unknown): React.ReactNode {
 
 function normalizedCheckList(value: unknown) {
   if (Array.isArray(value)) return value.map((item) => evidencePlainText(item)).filter(Boolean);
-  if (typeof value === "string") return value.split(",").map((item) => item.trim()).filter((line): line is ClientOcrLine => line !== null);
+  if (typeof value === "string") return value.split(",").map((item) => item.trim()).filter(Boolean);
   if (value === null || value === undefined) return [] as string[];
   return [evidencePlainText(value)].filter(Boolean);
 }
