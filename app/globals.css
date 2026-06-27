@@ -166,6 +166,7 @@ button.nav-item { width:100%; text-align:left; border:0; background:transparent;
 button.nav-item:hover:not(.active) { color:var(--green); }
 .history-row { display:grid; grid-template-columns:1.4fr .8fr 1fr .5fr .9fr .8fr auto; gap:12px; align-items:center; padding:13px 4px; border-top:1px solid #edf0ed; font-size:13px; }
 .history-table.no-member .history-row { grid-template-columns:.9fr 1fr .5fr 1fr .8fr auto; }
+.history-table.member-claim-table .history-row { grid-template-columns:minmax(180px,1.5fr) .75fr .9fr 1fr 1fr; }
 .history-row-button { width:100%; text-align:left; border:0; border-top:1px solid #edf0ed; background:transparent; color:inherit; cursor:pointer; transition:background .12s; }
 .history-row-button:hover { background:#f4f7f3; }
 .history-review { justify-self:end; padding:5px 11px; border:1px solid #cbd6d0; border-radius:7px; color:var(--green); font-size:11px; font-weight:800; }
