@@ -4,7 +4,7 @@
 
 import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Account, PublicAccount, changePassword, createAccount, createFirstAdmin, deleteAccount, getAccounts, getCurrentAccount, hasAnyAccounts, login, logout } from "@/lib/auth";
-import { ClaimSubmission, FinalDecision, ReceiptRecord, analyzeReceipt, deleteReceipt, getReceipts, recordDecision } from "@/lib/receipts";
+import { ClaimHistoryRecord, ClaimSubmission, FinalDecision, ReceiptRecord, analyzeReceipt, deleteReceipt, getClaimHistory, getReceipts, recordDecision } from "@/lib/receipts";
 import type { AnalysisResult, Flag, Tier } from "@/lib/analysis/types";
 
 type InputProps = React.InputHTMLAttributes<HTMLInputElement> & { label: string };
@@ -993,6 +993,46 @@ function ReceiptHistory({ showMember, canEdit = false, refreshKey = 0, eyebrow, 
   </section>;
 }
 
+function MemberClaimHistory({ refreshKey = 0 }: { refreshKey?: number }) {
+  const [claims, setClaims] = useState<ClaimHistoryRecord[] | null>(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    setClaims(null);
+    setError("");
+    void (async () => {
+      try {
+        const data = await getClaimHistory();
+        if (active) setClaims(data);
+      } catch (reason) {
+        if (active) setError(reason instanceof Error ? reason.message : "Unable to load your claim history.");
+      }
+    })();
+    return () => { active = false; };
+  }, [refreshKey]);
+
+  return <section className="surface wide">
+    <div className="history-head">
+      <div><p className="eyebrow">YOUR CLAIMS</p><h2>Claim history</h2></div>
+      {claims && <span className="step-count">{claims.length} total</span>}
+    </div>
+    {error ? <p className="message error" role="alert">{error}</p>
+      : !claims ? <p className="muted">Loading...</p>
+      : claims.length === 0 ? <div className="empty-state"><span>00</span><p>You have not submitted any claims yet.</p></div>
+      : <div className="history-table member-claim-table">
+          <div className="history-row history-header"><span>Receipt</span><span>Type</span><span>Status</span><span>Submitted</span><span>Reviewed</span></div>
+          {claims.map((claim) => <div className="history-row history-row-static" key={claim.id}>
+            <span className="history-member">{claim.fileName}</span>
+            <span>{claimLabels[claim.claimType] ?? claim.claimType}</span>
+            <span className={`decision-pill ${claim.finalDecision}`}>{decisionLabels[claim.finalDecision]}</span>
+            <span className="history-date"><span>Submitted</span>{formatDateTime(claim.createdAt)}</span>
+            <span className="history-date"><span>Reviewed</span>{claim.reviewedAt && claim.finalDecision !== "pending" ? formatDateTime(claim.reviewedAt) : "Pending HR review"}</span>
+          </div>)}
+        </div>}
+  </section>;
+}
+
 function getLast12Months(): { key: string; label: string }[] {
   const months: { key: string; label: string }[] = [];
   const now = new Date();
@@ -1294,6 +1334,8 @@ function Dashboard({ account, onLogout }: { account: Account; onLogout: () => vo
   const [membersError, setMembersError] = useState("");
   const [accountMessage, setAccountMessage] = useState<{ kind: "error" | "success"; text: string } | null>(null);
   const [adminView, setAdminView] = useState<"overview" | "members" | "add">("overview");
+  const [memberView, setMemberView] = useState<"submit" | "history">("submit");
+  const [memberHistoryRefresh, setMemberHistoryRefresh] = useState(0);
   const [showProfile, setShowProfile] = useState(false);
   const isAdmin = account.role === "admin";
   const refresh = useCallback(async () => {
@@ -1340,7 +1382,8 @@ function Dashboard({ account, onLogout }: { account: Account; onLogout: () => vo
               <button type="button" className={`nav-item ${!showProfile && adminView === "add" ? "active" : ""}`} onClick={() => { setShowProfile(false); setAdminView("add"); }}>Employees</button>
             </>
           : <>
-              <button type="button" className={`nav-item ${!showProfile ? "active" : ""}`} onClick={() => setShowProfile(false)}>Submit claim</button>
+              <button type="button" className={`nav-item ${!showProfile && memberView === "submit" ? "active" : ""}`} onClick={() => { setShowProfile(false); setMemberView("submit"); }}>Submit claim</button>
+              <button type="button" className={`nav-item ${!showProfile && memberView === "history" ? "active" : ""}`} onClick={() => { setShowProfile(false); setMemberView("history"); }}>Claim history</button>
             </>}
         <div className="sidebar-note"><strong>{isAdmin ? "HR access" : "Employee access"}</strong><span>{isAdmin ? "Review claims and manage employees" : "Submit receipts for reimbursement"}</span></div></aside>
       <section className="content">
@@ -1357,7 +1400,9 @@ function Dashboard({ account, onLogout }: { account: Account; onLogout: () => vo
                 {membersError ? <p className="message error" role="alert">{membersError}</p> : accounts.length ? <div className="member-list">{accounts.map((member) => <div className="member-row" key={member.id}><span className="avatar">{member.name[0].toUpperCase()}</span><div className="member-details"><strong>{member.name}</strong><span>{member.email}</span><span className="member-role">{member.role}</span></div><div className="member-actions"><span className="status member-status">Active</span>{member.id !== account.id && <button type="button" className="delete-member-button" onClick={() => removeAccount(member.id)}>Remove</button>}</div></div>)}</div> : <div className="empty-state"><span>01</span><p>No accounts yet. Add the first account using the form.</p></div>}
               </section>
             </div>
-          : <ReceiptUpload />}
+          : memberView === "submit"
+          ? <ReceiptUpload onAnalyzed={() => setMemberHistoryRefresh((value) => value + 1)} />
+          : <MemberClaimHistory refreshKey={memberHistoryRefresh} />}
       </section>
     </div>
   </main>;
