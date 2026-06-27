@@ -3,8 +3,8 @@
 /* eslint-disable @next/next/no-img-element */
 
 import { ChangeEvent, FormEvent, useCallback, useEffect, useRef, useState } from "react";
-import { Account, PublicAccount, Role, changePassword, createAccount, createFirstAdmin, deleteAccount, getAccounts, getCurrentAccount, hasAnyAccounts, login, logout } from "@/lib/auth";
-import { FinalDecision, ReceiptRecord, analyzeReceipt, deleteReceipt, getReceipts, recordDecision } from "@/lib/receipts";
+import { Account, PublicAccount, changePassword, createAccount, createFirstAdmin, deleteAccount, getAccounts, getCurrentAccount, hasAnyAccounts, login, logout } from "@/lib/auth";
+import { ClaimSubmission, FinalDecision, ReceiptRecord, analyzeReceipt, deleteReceipt, getReceipts, recordDecision } from "@/lib/receipts";
 import type { AnalysisResult, Flag, Tier } from "@/lib/analysis/types";
 
 type InputProps = React.InputHTMLAttributes<HTMLInputElement> & { label: string };
@@ -21,8 +21,8 @@ function AuthShell({ children }: { children: React.ReactNode }) {
   return <main className="auth-layout">
     <section className="intro-panel">
       <Logo />
-      <div className="intro-copy"><p className="eyebrow light">RECEIPT INTELLIGENCE</p><h1>Your go to receipt fraud-triage tool</h1></div>
-      <p className="footnote">Built for human review. Never automatic rejection.</p>
+      <div className="intro-copy"><p className="eyebrow light">CLAIM INTELLIGENCE</p><h1>Employee claims, ready for HR review</h1></div>
+      <p className="footnote">Built for human review. HR makes the final call.</p>
     </section>
     <section className="form-panel">{children}</section>
   </main>;
@@ -42,14 +42,14 @@ function LoginForm({ onLogin }: { onLogin: (account: Account) => void }) {
   }
 
   return <AuthShell><div className="form-card">
-    <p className="eyebrow">SECURE ACCESS</p><h2>Welcome back</h2><p className="muted">Sign in with your admin or member account.</p>
+    <p className="eyebrow">SECURE ACCESS</p><h2>Welcome back</h2><p className="muted">Sign in with your HR admin or employee account.</p>
     <form onSubmit={submit}>
       <Field label="Email address" type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@company.com" />
       <Field label="Password" type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Enter your password" />
       {error && <p className="message error" role="alert">{error}</p>}
       <button className="primary-button" disabled={busy}>{busy ? "Signing in..." : "Sign in"}</button>
     </form>
-    <p className="help-text">Need an account? Ask your Authentico admin to add you.</p>
+    <p className="help-text">Need an account? Ask HR to add you.</p>
   </div></AuthShell>;
 }
 
@@ -85,7 +85,6 @@ function AddAccount({ onAdded }: { onAdded: () => void }) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [role, setRole] = useState<Role>("member");
   const [message, setMessage] = useState<{ kind: "error" | "success"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -102,15 +101,13 @@ function AddAccount({ onAdded }: { onAdded: () => void }) {
 
     try {
       const invitedEmail = email.trim().toLowerCase();
-      const invitedRole = role;
-      await createAccount({ name, email: invitedEmail, password, role: invitedRole });
+      await createAccount({ name, email: invitedEmail, password, role: "member" });
       setName("");
       setEmail("");
       setPassword("");
-      setRole("member");
       setMessage({
         kind: "success",
-        text: `${invitedRole === "admin" ? "Admin" : "Member"} account created. A password reset email has been sent to ${invitedEmail}.`,
+        text: `Employee account created. A password reset email has been sent to ${invitedEmail}.`,
       });
       onAdded();
     } catch (reason) {
@@ -122,8 +119,7 @@ function AddAccount({ onAdded }: { onAdded: () => void }) {
 
   return <form className="member-form" onSubmit={submit}>
     <Field label="Name" required value={name} onChange={(e) => setName(e.target.value)} placeholder="Full name" />
-    <Field label="Email address" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="user@company.com" />
-    <label className="field"><span>Role</span><select required value={role} onChange={(e) => setRole(e.target.value as Role)}><option value="member">Member</option><option value="admin">Admin</option></select></label>
+    <Field label="Email address" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="employee@company.com" />
     <Field label="Temporary password" type="password" minLength={8} required value={password} onChange={(e) => setPassword(e.target.value)} placeholder="At least 8 characters" />
     {message && <p className={`message ${message.kind}`}>{message.text}</p>}
     <button className="primary-button compact" disabled={busy}>{busy ? "Sending reset email..." : "Send invite"}</button>
@@ -330,7 +326,7 @@ function ResultSummary({ receipt, onDecision, onReset }: { receipt: ReceiptRecor
       {error && <p className="message error" role="alert">{error}</p>}
     </div>
 
-    <button className="text-button dark" onClick={onReset}>Check another receipt</button>
+    <button className="text-button dark" onClick={onReset}>Submit another claim</button>
   </section>;
 }
 
@@ -340,7 +336,7 @@ function ReceiptUpload({ onAnalyzed }: { onAnalyzed?: () => void }) {
   const [file, setFile] = useState<File | null>(null);
   const [error, setError] = useState("");
   const [phase, setPhase] = useState<"form" | "analyzing">("form");
-  const [receipt, setReceipt] = useState<ReceiptRecord | null>(null);
+  const [submission, setSubmission] = useState<ClaimSubmission | null>(null);
 
   function selectType(type: ReceiptType) {
     setReceiptType(type);
@@ -383,7 +379,7 @@ function ReceiptUpload({ onAnalyzed }: { onAnalyzed?: () => void }) {
   }
 
   function reset() {
-    setReceipt(null);
+    setSubmission(null);
     setReceiptType(null);
     setFile(null);
     setError("");
@@ -398,21 +394,25 @@ function ReceiptUpload({ onAnalyzed }: { onAnalyzed?: () => void }) {
     setError("");
     setPhase("analyzing");
     try {
-      setReceipt(await analyzeReceipt(file, receiptType));
+      setSubmission(await analyzeReceipt(file, receiptType));
       onAnalyzed?.();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Unable to analyze the receipt.");
+      setError(reason instanceof Error ? reason.message : "Unable to submit the claim.");
       setPhase("form");
     }
   }
 
-  async function decide(decision: "authentic" | "rejected") {
-    if (!receipt) return;
-    setReceipt(await recordDecision(receipt.id, decision));
-    onAnalyzed?.();
-  }
-
-  if (receipt) return <ResultSummary receipt={receipt} onDecision={decide} onReset={reset} />;
+  if (submission) return <section className="receipt-workflow submission-success">
+    <div className="success-mark">✓</div>
+    <p className="eyebrow">CLAIM SUBMITTED</p>
+    <h2>Thank you! HR will process your claim before rolling out the reimbursement.</h2>
+    <div className="submission-details">
+      <div><span>Receipt</span><strong>{submission.fileName}</strong></div>
+      <div><span>Claim type</span><strong>{claimLabels[submission.claimType]}</strong></div>
+      <div><span>Submitted</span><strong>{formatDateTime(submission.createdAt)}</strong></div>
+    </div>
+    <button className="primary-button compact" onClick={reset}>Submit another claim</button>
+  </section>;
 
   const selectedType = receiptTypes.find((type) => type.id === receiptType);
   const selectedFileKind = file ? fileKind(file) : null;
@@ -420,13 +420,13 @@ function ReceiptUpload({ onAnalyzed }: { onAnalyzed?: () => void }) {
 
   return <section className="receipt-workflow">
     <div className="workflow-heading">
-      <div><p className="eyebrow">NEW RECEIPT CHECK</p><h2>What kind of receipt are you checking?</h2><p>Select the claim category, then attach one receipt file.</p></div>
+      <div><p className="eyebrow">NEW REIMBURSEMENT CLAIM</p><h2>Submit your receipt to HR</h2><p>Select the claim category, then attach one receipt file for HR review.</p></div>
       <span className="step-count">2 steps</span>
     </div>
 
     <form onSubmit={submit}>
       <fieldset className="receipt-type-fieldset" disabled={analyzing}>
-        <legend><span>01</span> Choose a receipt type</legend>
+        <legend><span>01</span> Choose a claim type</legend>
         <div className="receipt-type-grid">
           {receiptTypes.map((type) => <label className={`receipt-type-card ${receiptType === type.id ? "selected" : ""}`} key={type.id}>
             <input type="radio" name="receipt-type" value={type.id} checked={receiptType === type.id} onChange={() => selectType(type.id)} />
@@ -453,7 +453,7 @@ function ReceiptUpload({ onAnalyzed }: { onAnalyzed?: () => void }) {
       </fieldset>
 
       {error && <p className="message error receipt-message" role="alert">{error}</p>}
-      <button className="primary-button receipt-submit" disabled={!receiptType || !file || analyzing}>{analyzing ? "Analyzing..." : "Analyze receipt"}</button>
+      <button className="primary-button receipt-submit" disabled={!receiptType || !file || analyzing}>{analyzing ? "Submitting..." : "Submit claim"}</button>
     </form>
   </section>;
 }
@@ -856,7 +856,7 @@ function ReceiptDetailModal({ receipt, canEdit, onClose, onChange, onDeleted }: 
           <button className="danger-button" disabled={busy !== null || receipt.finalDecision === "rejected"} onClick={() => decide("rejected")}>{busy === "rejected" ? "Saving..." : "Reject"}</button>
         </div>
       </div> : <div className="final-check">
-        <div><p className="eyebrow">DECISION</p><p className="muted final-check-copy">Recorded by the member who submitted this receipt.</p></div>
+        <div><p className="eyebrow">DECISION</p><p className="muted final-check-copy">Recorded by HR after reviewing this claim.</p></div>
         <span className={`decision-pill ${receipt.finalDecision}`}>{decisionLabels[receipt.finalDecision]}</span>
       </div>}
 
@@ -969,7 +969,6 @@ function Dashboard({ account, onLogout }: { account: Account; onLogout: () => vo
   const [accounts, setAccounts] = useState<PublicAccount[]>([]);
   const [membersError, setMembersError] = useState("");
   const [accountMessage, setAccountMessage] = useState<{ kind: "error" | "success"; text: string } | null>(null);
-  const [memberView, setMemberView] = useState<"overview" | "receipts">("overview");
   const [adminView, setAdminView] = useState<"overview" | "members">("overview");
   const [showProfile, setShowProfile] = useState(false);
   const isAdmin = account.role === "admin";
@@ -1012,29 +1011,26 @@ function Dashboard({ account, onLogout }: { account: Account; onLogout: () => vo
     <div className="dashboard-body">
       <aside className="sidebar"><p className="nav-label">WORKSPACE</p>
         {isAdmin ? <>
-              <button type="button" className={`nav-item ${!showProfile && adminView === "overview" ? "active" : ""}`} onClick={() => { setShowProfile(false); setAdminView("overview"); }}>Overview</button>
-              <button type="button" className={`nav-item ${!showProfile && adminView === "members" ? "active" : ""}`} onClick={() => { setShowProfile(false); setAdminView("members"); }}>Add members</button>
+              <button type="button" className={`nav-item ${!showProfile && adminView === "overview" ? "active" : ""}`} onClick={() => { setShowProfile(false); setAdminView("overview"); }}>Claims review</button>
+              <button type="button" className={`nav-item ${!showProfile && adminView === "members" ? "active" : ""}`} onClick={() => { setShowProfile(false); setAdminView("members"); }}>Employees</button>
             </>
           : <>
-              <button type="button" className={`nav-item ${!showProfile && memberView === "overview" ? "active" : ""}`} onClick={() => { setShowProfile(false); setMemberView("overview"); }}>Overview</button>
-              <button type="button" className={`nav-item ${!showProfile && memberView === "receipts" ? "active" : ""}`} onClick={() => { setShowProfile(false); setMemberView("receipts"); }}>Submitted receipts</button>
+              <button type="button" className={`nav-item ${!showProfile ? "active" : ""}`} onClick={() => setShowProfile(false)}>Submit claim</button>
             </>}
-        <div className="sidebar-note"><strong>{isAdmin ? "Admin access" : "Member access"}</strong><span>{isAdmin ? "History and account management" : "Receipt checking only"}</span></div></aside>
+        <div className="sidebar-note"><strong>{isAdmin ? "HR access" : "Employee access"}</strong><span>{isAdmin ? "Review claims and manage employees" : "Submit receipts for reimbursement"}</span></div></aside>
       <section className="content">
-        <div className="page-heading"><div><p className="eyebrow">{showProfile ? "YOUR PROFILE" : account.role.toUpperCase() + " WORKSPACE"}</p><h1>Hello, {account.name}</h1></div></div>
+        <div className="page-heading"><div><p className="eyebrow">{showProfile ? "YOUR PROFILE" : isAdmin ? "HR WORKSPACE" : "EMPLOYEE WORKSPACE"}</p><h1>Hello, {account.name}</h1></div></div>
         {showProfile ? <ProfileTab account={account} />
           : isAdmin ? adminView === "overview"
-          ? <ReceiptHistory showMember canEdit eyebrow="CHECK HISTORY" title="Receipt checks" emptyText="No receipts have been checked yet." />
+          ? <ReceiptHistory showMember canEdit eyebrow="HR REVIEW QUEUE" title="Employee reimbursement claims" emptyText="No employee claims have been submitted yet." />
           : <div className="admin-grid">
-              <section className="surface"><h2>Add an account</h2><p>Send a private password setup invite to an admin or a member.</p><AddAccount onAdded={refresh} /></section>
-              <section className="surface"><h2>Members</h2><p>{accounts.length} account{accounts.length === 1 ? "" : "s"}</p>
+              <section className="surface"><h2>Add an employee</h2><p>Send a private password setup invite to an employee who needs to submit claims.</p><AddAccount onAdded={refresh} /></section>
+              <section className="surface"><h2>Employees</h2><p>{accounts.length} account{accounts.length === 1 ? "" : "s"}</p>
                 {accountMessage && <p className={`message ${accountMessage.kind}`}>{accountMessage.text}</p>}
                 {membersError ? <p className="message error" role="alert">{membersError}</p> : accounts.length ? <div className="member-list">{accounts.map((member) => <div className="member-row" key={member.id}><span className="avatar">{member.name[0].toUpperCase()}</span><div className="member-details"><strong>{member.name}</strong><span>{member.email}</span><span className="member-role">{member.role}</span></div><div className="member-actions"><span className="status member-status">Active</span>{member.id !== account.id && <button type="button" className="delete-member-button" onClick={() => removeAccount(member.id)}>Remove</button>}</div></div>)}</div> : <div className="empty-state"><span>01</span><p>No accounts yet. Add the first account using the form.</p></div>}
               </section>
             </div>
-          : memberView === "overview"
-          ? <ReceiptUpload />
-          : <ReceiptHistory showMember={false} canEdit eyebrow="YOUR RECEIPTS" title="Submitted receipts" emptyText="You haven't submitted any receipts yet." />}
+          : <ReceiptUpload />}
       </section>
     </div>
   </main>;

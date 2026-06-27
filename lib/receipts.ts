@@ -19,19 +19,26 @@ export type ReceiptRecord = {
   uploader: { name: string; email: string } | null;
 };
 
+export type ClaimSubmission = {
+  id: string;
+  fileName: string;
+  claimType: ReceiptType;
+  createdAt: string;
+};
+
 async function readJson<T>(response: Response): Promise<T> {
   const body = await response.json();
   if (!response.ok) throw new Error(body.error ?? "The request could not be completed.");
   return body as T;
 }
 
-export async function analyzeReceipt(file: File, claimType: ReceiptType): Promise<ReceiptRecord> {
+export async function analyzeReceipt(file: File, claimType: ReceiptType): Promise<ClaimSubmission> {
   const form = new FormData();
   form.append("file", file);
   form.append("claimType", claimType);
-  return readJson<{ receipt: ReceiptRecord }>(
+  return readJson<{ submission: ClaimSubmission }>(
     await fetch("/api/analyze", { method: "POST", body: form }),
-  ).then((body) => body.receipt);
+  ).then((body) => body.submission);
 }
 
 export async function getReceipts(): Promise<ReceiptRecord[]> {

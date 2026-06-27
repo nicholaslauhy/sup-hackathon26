@@ -8,9 +8,9 @@ export const dynamic = "force-dynamic";
 
 const DECISIONS: FinalDecision[] = ["authentic", "rejected"];
 
-// The member who uploaded a receipt records the final human decision after
-// reviewing the flags. Writes go through the service-role client (RLS blocks
-// authenticated updates), gated on ownership.
+// HR uses the single admin account to record the final reimbursement decision.
+// Writes go through the service-role client (RLS blocks authenticated updates),
+// gated on the admin role.
 export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const supabase = await createClient();
@@ -19,6 +19,9 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
 
   const account = await findProfile(user.id);
   if (!account) return NextResponse.json({ error: "Account profile not found." }, { status: 404 });
+  if (account.role !== "admin") {
+    return NextResponse.json({ error: "Only HR can approve or reject claims." }, { status: 403 });
+  }
 
   const body = await request.json() as { decision?: string };
   const decision = body.decision as FinalDecision;
@@ -29,13 +32,10 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   const admin = createAdminClient();
   const { data: existing } = await admin
     .from("receipts")
-    .select("id,uploaded_by")
+    .select("id")
     .eq("id", id)
     .maybeSingle();
   if (!existing) return NextResponse.json({ error: "Receipt not found." }, { status: 404 });
-  if (existing.uploaded_by !== user.id) {
-    return NextResponse.json({ error: "You can only review your own receipts." }, { status: 403 });
-  }
 
   const { data: updated, error: updateError } = await admin
     .from("receipts")
