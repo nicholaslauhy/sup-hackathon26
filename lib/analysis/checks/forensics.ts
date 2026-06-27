@@ -7,16 +7,11 @@ import type { VisionFinding, VisionForensics } from "../vision";
 // errs conservative (see vision.ts), this is a second floor on top.
 const MIN_CONFIDENCE = 55;
 
-// When the VLM did not run (no key, PDF/HEIC, or an error), both checks stay
-// `pending` with file-kind-aware wording.
-function pendingReason(fileKind: FileKind): string {
-  if (fileKind === "PDF") {
-    return "PDF pages are not yet rasterised for the image-forensics pass, so this could not be evaluated.";
-  }
-  if (fileKind === "HEIC") {
-    return "HEIC images are not yet decoded for the image-forensics pass, so this could not be evaluated.";
-  }
-  return "The image-forensics pass did not run (vision analysis is unavailable), so this could not be evaluated.";
+// When the VLM did not run (no API key configured, or the call failed), both
+// checks stay `pending`. The pass now supports every file kind, so a pending
+// result means the analysis was unavailable, not that the format is unsupported.
+function pendingReason(_fileKind: FileKind): string {
+  return "The image-forensics pass did not run (no AI key is configured, or the analysis failed), so this could not be evaluated.";
 }
 
 // Font & spacing consistency: localised font/baseline/kerning mismatch on a
