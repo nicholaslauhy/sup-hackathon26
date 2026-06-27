@@ -182,7 +182,33 @@ button.nav-item:hover:not(.active) { color:var(--green); }
 .history-date { color:var(--muted); font-size:12px; }
 .tier-dot { display:inline-block; width:8px; height:8px; margin-right:7px; border-radius:50%; vertical-align:middle; }
 .tier-dot.green { background:var(--risk-green); } .tier-dot.amber { background:var(--risk-amber); } .tier-dot.red { background:var(--risk-red); }
-@media(max-width:850px){.auth-layout{grid-template-columns:1fr}.intro-panel{min-height:330px;padding:30px}.intro-copy h1{font-size:44px}.footnote{display:none}.form-panel{padding:52px 24px}.dashboard-body{grid-template-columns:1fr}.sidebar{display:none}.admin-grid{grid-template-columns:1fr}.surface.wide{grid-column:auto}.receipt-type-grid{grid-template-columns:1fr}.result-banner{flex-direction:column;align-items:flex-start}.score-meter{width:100%}.history-row{grid-template-columns:1fr 1fr;gap:6px 12px}.history-header{display:none}}
+.member-tabs { display:flex; gap:8px; margin:4px 0 18px; }
+.member-tab { padding:9px 16px; border:1px solid #d6e0da; border-radius:999px; color:var(--muted); background:#f5f7f3; font-size:12px; font-weight:700; cursor:pointer; }
+.member-tab.active { color:white; background:var(--green); border-color:var(--green); }
+.claims-month-group { margin-bottom:22px; }
+.claims-month-group:last-child { margin-bottom:0; }
+.claims-month-heading { display:flex; align-items:center; gap:10px; margin:0 0 8px; font:400 17px Georgia,serif; }
+.claims-search { width:100%; height:44px; margin-bottom:18px; padding:0 14px; border:1px solid #ccd9d3; border-radius:8px; background:white; color:var(--ink); font:inherit; }
+.claims-search:focus { outline:2px solid #cfe7dc; border-color:var(--green); }
+.claims-dashboard { display:grid; grid-template-columns:1fr 1fr; gap:18px; align-items:start; }
+.claims-card-placeholder { visibility:hidden; pointer-events:none; }
+.claims-empty-section { margin-top:24px; padding-top:20px; border-top:1px solid #edf0ed; }
+.claims-empty-heading { margin:0 0 14px; color:#8b9893; font-size:10px; font-weight:800; text-transform:uppercase; letter-spacing:.6px; }
+.claims-card { padding:20px 22px; border:1px solid var(--line); border-radius:11px; background:#fafbf8; }
+.claims-card-empty { opacity:.65; }
+.claims-card-button { width:100%; text-align:left; font:inherit; color:inherit; cursor:pointer; transition:border-color .12s, box-shadow .12s; }
+.claims-card-button:hover { border-color:#b9c6bf; box-shadow:0 8px 20px #142c2812; }
+.claims-card-head { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; flex-wrap:wrap; }
+.claims-card-head strong { font-size:15px; }
+.claims-card-email { display:block; margin-top:2px; color:var(--muted); font-size:12px; }
+.claims-card-stats { display:flex; gap:8px; flex-wrap:wrap; }
+.claims-tier-row { display:flex; gap:18px; margin-top:14px; color:var(--muted); font-size:12px; }
+.claims-tier-row span { display:flex; align-items:center; }
+.claims-bar-chart { display:flex; align-items:flex-end; gap:8px; margin-top:18px; height:84px; }
+.claims-bar-col { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:flex-end; height:100%; gap:6px; }
+.claims-bar { width:100%; max-width:22px; border-radius:3px 3px 0 0; background:var(--green); }
+.claims-bar-label { color:#8b9893; font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:.4px; }
+@media(max-width:850px){.auth-layout{grid-template-columns:1fr}.intro-panel{min-height:330px;padding:30px}.intro-copy h1{font-size:44px}.footnote{display:none}.form-panel{padding:52px 24px}.dashboard-body{grid-template-columns:1fr}.sidebar{display:none}.admin-grid{grid-template-columns:1fr}.surface.wide{grid-column:auto}.receipt-type-grid{grid-template-columns:1fr}.result-banner{flex-direction:column;align-items:flex-start}.score-meter{width:100%}.history-row{grid-template-columns:1fr 1fr;gap:6px 12px}.history-header{display:none}.claims-dashboard{grid-template-columns:1fr}.claims-card-placeholder{display:none}}
 @media(max-width:520px){.intro-panel{min-height:290px}.intro-copy h1{font-size:38px}.intro-copy>p:last-child{font-size:14px}.topbar{padding:0 18px}.account-menu>div,.account-name-button{display:none}.content{padding:36px 18px}.page-heading h1{font-size:35px}.surface{padding:22px}.locked{align-items:flex-start;gap:20px;flex-direction:column}.receipt-workflow{padding:22px}.workflow-heading{flex-direction:column}.receipt-type-card{min-height:105px}.selected-file{align-items:flex-start;flex-wrap:wrap}.remove-file{margin-left:59px}.receipt-submit{width:100%}}
 
 .field select {
