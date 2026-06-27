@@ -956,7 +956,7 @@ function formatMoneyLikeValue(value: unknown) {
 
 function evidenceValue(value: unknown): React.ReactNode {
   if (typeof value === "string") {
-    const parts = value.split(",").map((part) => part.trim()).filter((line): line is ClientOcrLine => line !== null);
+    const parts = value.split(",").map((part) => part.trim()).filter(Boolean);
     if (parts.length > 1) {
       return <ul className="evidence-list">{parts.map((part) => <li key={part}>{part}</li>)}</ul>;
     }
@@ -1002,10 +1002,10 @@ function evidenceValue(value: unknown): React.ReactNode {
 
 
 function normalizedCheckList(value: unknown) {
-  if (Array.isArray(value)) return value.map((item) => evidencePlainText(item)).filter((line): line is ClientOcrLine => line !== null);
+  if (Array.isArray(value)) return value.map((item) => evidencePlainText(item)).filter(Boolean);
   if (typeof value === "string") return value.split(",").map((item) => item.trim()).filter((line): line is ClientOcrLine => line !== null);
   if (value === null || value === undefined) return [] as string[];
-  return [evidencePlainText(value)].filter((line): line is ClientOcrLine => line !== null);
+  return [evidencePlainText(value)].filter(Boolean);
 }
 
 function ArithmeticEvidenceDetails({ flag }: { flag: Flag }) {
