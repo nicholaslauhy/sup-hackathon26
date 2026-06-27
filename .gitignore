@@ -1,0 +1,14 @@
+node_modules/
+.next/
+out/
+.DS_Store
+*.log
+.env*
+!.env.example
+*.un~
+*~
+claim_types/
+
+# Tesseract.js downloads language traineddata into the cwd at runtime
+*.traineddata
+*.traineddata.gz
