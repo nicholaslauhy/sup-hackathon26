@@ -204,8 +204,27 @@ export async function analyzeReceipt(input: AnalyzeInput): Promise<AnalysisResul
   // deterministic/OCR and image-forensics checks.
   flags.unshift(receiptDocumentFlag(extractResult, shape));
   flags.push(referenceFlag);
-  flags.push(arithmeticFlag(commonExtracted, confidence));
-  flags.push(roundNumbersFlag(commonExtracted, confidence));
+  // The VLM (claim extraction) reads structured amounts far more reliably than
+  // OCR. When it ran, feed its merged fields at high confidence so the line-item
+  // arithmetic and round-amount checks evaluate the VLM numbers instead of the
+  // noisy OCR ones; otherwise fall back to the OCR extraction unchanged.
+  const moneyFields = claimExtracted ? extracted : commonExtracted;
+  const moneyConfidence = claimExtracted ? 95 : confidence;
+  // Record which engine supplied the figures so the UI can attribute the
+  // decision: the AI receipt model when it ran, otherwise the external
+  // text-extraction tool (pdfjs text layer for digital PDFs, tesseract.js OCR
+  // for images / scanned PDFs).
+  const moneyEngine = claimExtracted
+    ? "ai-receipt"
+    : extractResult?.source === "pdf-text"
+      ? "pdfjs"
+      : "tesseract";
+  const arithmetic = arithmeticFlag(moneyFields, moneyConfidence);
+  const roundNumbers = roundNumbersFlag(moneyFields, moneyConfidence);
+  for (const flag of [arithmetic, roundNumbers]) {
+    flag.evidence = { ...(flag.evidence ?? {}), decisionEngine: moneyEngine };
+  }
+  flags.push(arithmetic, roundNumbers);
   flags.push(fontConsistencyFlag(vision, input.fileKind));
   flags.push(physicalAlterationFlag(vision, input.fileKind));
 

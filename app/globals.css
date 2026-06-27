@@ -1264,6 +1264,27 @@ button.nav-item:hover:not(.active) { color:var(--green); }
   line-height: 1.5;
 }
 
+.flag-decision-source {
+  display: block;
+  margin-top: 8px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 1.45;
+  width: max-content;
+  max-width: 100%;
+}
+
+.flag-decision-source.ai {
+  color: #4a3a73;
+  background: #ece7f6;
+}
+
+.flag-decision-source.external {
+  color: #5a6661;
+  background: #eef1ef;
+}
+
 .flag-view-hint {
   display: inline-flex;
   width: max-content;
