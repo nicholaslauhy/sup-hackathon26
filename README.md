@@ -4,21 +4,21 @@ Authentico is a receipt and invoice fraud-triage application for finance and cla
 
 ## Fraud checks
 
-When a receipt is submitted, Authentico runs the following checks and combines the triggered flags into a risk score (green / amber / red). The image-forensics checks (font/spacing and physical alteration) run through an OpenAI vision model on JPEG/PNG uploads; when no `OPENAI_API_KEY` is configured, or for PDF/HEIC files (not yet rasterised/decoded for the vision pass), they are surfaced to the reviewer as **Pending** and do not affect the score. Checks marked **Planned** are on the roadmap (external-verification layers) and are not yet implemented.
+When a receipt is submitted, Authentico runs the following checks and combines the triggered flags into a risk score (green / amber / red). The image-forensics checks (font/spacing and physical alteration) run through an OpenAI vision model on every supported file kind — JPEG/PNG and PDF (sent as a file input so the model reads the rendered pages), and HEIC after a sharp decode. When no `OPENAI_API_KEY` is configured, or the vision call fails, they are surfaced to the reviewer as **Pending** and do not affect the score. Checks marked **Planned** are on the roadmap (external-verification layers) and are not yet implemented.
 
-| Check | Applies to | Severity | Points | Status | What it looks for |
-| --- | --- | --- | --- | --- | --- |
-| Submitted file is a receipt | All files | Medium | 28 | Active | A file with none of the monetary amounts or receipt terms of a real receipt — and, for images, no paper-like document shape — suggesting a wrong or unrelated file. |
-| Duplicate / near-duplicate submission | All files | High | 45 | Active | An identical (content hash) or lightly altered (perceptual hash) file submitted before. |
-| Edited in image software | JPEG / PNG | High | 45 | Active | EXIF metadata naming an editor (Photoshop, GIMP, Canva, etc.). |
-| Camera metadata present | JPEG / PNG | Medium | 28 | Active | Missing camera make/model and capture timestamp, typical of screenshots, exports, or AI-generated images. |
-| Created with image/design software | PDF | High | 45 | Active | PDF producer/creator naming editing software unusual for a genuine merchant invoice. (PDF metadata unreadable fallback: Low / 12.) |
-| Modified after creation | PDF | Medium | 28 | Active | PDF modification date later than its creation date. |
-| Line-item arithmetic | All files | High | 45 | Active | Line items, subtotal, tax and total not adding up. |
-| Suspiciously round amounts | All files | Low | 12 | Active | Unusually round figures. |
-| Font & spacing consistency | JPEG / PNG | Medium | 28 | Active (AI) | A value-bearing field (amount, date, total) rendered in a font, weight, size or baseline inconsistent with the surrounding print, typical of a digitally edited region. Runs via the OpenAI vision pass; PDF/HEIC stay pending. |
-| Scratches & physical alteration | JPEG / PNG | High | 45 | Active (AI) | Visible scratch-outs, correction fluid/tape, erasures, smudges, or overwriting that conceal or replace original values (amount, date, merchant). Runs via the OpenAI vision pass; PDF/HEIC stay pending. |
-| Authentic reference comparison | Selected claim type | Info | 0 | Active | Exact or visually close matches against the private authentic-example folder. No-match results never increase risk while the sample set is small. |
+| Check | Applies to | Severity | Status | What it looks for |
+| --- | --- | --- | --- | --- |
+| Submitted file is a receipt | All files | Medium | Active | A file with none of the monetary amounts or receipt terms of a real receipt — and, for images, no paper-like document shape — suggesting a wrong or unrelated file. |
+| Duplicate / near-duplicate submission | All files | High | Active | An identical (content hash) or lightly altered (perceptual hash) file submitted before. |
+| Edited in image software | JPEG / PNG | High | Active | EXIF metadata naming an editor (Photoshop, GIMP, Canva, etc.). |
+| Camera metadata present | JPEG / PNG | Medium | Active | Missing camera make/model and capture timestamp, typical of screenshots, exports, or AI-generated images. |
+| Created with image/design software | PDF | High | Active | PDF producer/creator naming editing software unusual for a genuine merchant invoice. |
+| Modified after creation | PDF | Medium | Active | PDF modification date later than its creation date. |
+| Line-item arithmetic | All files | High | Active | Line items, subtotal, tax and total not adding up. |
+| Suspiciously round amounts | All files | Low | Active | Unusually round figures. |
+| Font & spacing consistency | JPEG / PNG / PDF / HEIC | Medium | Active (AI) | A value-bearing field (amount, date, total) rendered in a font, weight, size or baseline inconsistent with the surrounding print, typical of a digitally edited region. Runs via the OpenAI vision pass; pending only when no key is configured or the call fails. |
+| Scratches & physical alteration | JPEG / PNG / PDF / HEIC | High | Active (AI) | Visible scratch-outs, correction fluid/tape, erasures, smudges, or overwriting that conceal or replace original values (amount, date, merchant). Runs via the OpenAI vision pass; pending only when no key is configured or the call fails. |
+| Authentic reference comparison | Selected claim type | Info | Active | Exact or visually close matches against the private authentic-example folder. No-match results never increase risk while the sample set is small. |
 
 ### Claim-specific checks
 
@@ -33,31 +33,6 @@ The common OCR, arithmetic, receipt-document, metadata, duplicate, and image-for
 The private reference bucket supplies supporting evidence only; it is not training and an unmatched receipt is not considered suspicious. For Grab arithmetic, a mismatch is scored only when structured extraction confirms every visible charge and discount row was captured. Partial extraction remains pending.
 
 > HEIC files currently run only exact-duplicate detection; HEIC metadata extraction is not yet supported.
-
-## Risk scoring
-
-Each **triggered** flag contributes the points shown in its row of the [Fraud checks](#fraud-checks) table above; `passed` and `pending` flags contribute nothing. The points are summed and capped at 100, and the total maps to a risk tier. Points are assigned by severity:
-
-| Severity | Points when triggered |
-| --- | --- |
-| Info | 0 |
-| Low | 12 |
-| Medium | 28 |
-| High | 45 |
-
-Notes:
-
-- **PDF metadata unreadable** is a fallback of the *Created with image/design software* check and scores **Low (12)** instead of High.
-- The claim-specific checks also contribute at their own severities: medical registration (Low/12), medical timing (Low/12), and the medical/purchase/Grab identifier, location, timing and tax checks (Medium/28), and the claim arithmetic checks (High/45).
-- **Correlation grouping:** the generic `arithmetic` check and the claim-specific arithmetic/tax checks (`purchase-arithmetic`, `purchase-tax`, `medical-arithmetic`, `grab-arithmetic`) collapse into one "money" group — only the strongest of them scores, so one bad total is never counted twice.
-
-Tier thresholds from the final score:
-
-| Score | Tier |
-| --- | --- |
-| 0–24 | Green (low risk) |
-| 25–59 | Amber (some risk) |
-| 60–100 | Red (high risk) |
 
 ## Account roles
 

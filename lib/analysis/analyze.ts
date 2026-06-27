@@ -6,7 +6,6 @@ import { extractClaimFields } from "./claim-extract";
 import { arithmeticFlag } from "./checks/arithmetic";
 import { fontConsistencyFlag, physicalAlterationFlag } from "./checks/forensics";
 import { receiptDocumentFlag } from "./checks/receipt-document";
-import { roundNumbersFlag } from "./checks/round-numbers";
 import { extractFields, type ExtractResult } from "./extract";
 import { imageMetadataFlags, pdfMetadataFlags } from "./metadata";
 import { authenticReferenceFlag } from "./references";
@@ -186,10 +185,10 @@ export async function analyzeReceipt(input: AnalyzeInput): Promise<AnalysisResul
     shape = await documentShapeSignal(input.bytes);
   }
 
-  let vision: Awaited<ReturnType<typeof analyzeImageForensics>> = null;
-  if (input.fileKind === "JPEG" || input.fileKind === "PNG") {
-    vision = await analyzeImageForensics(input.bytes, input.fileKind);
-  }
+  // Image-forensics runs on every supported file kind: images directly, PDFs
+  // via the Responses file input, and HEIC after a sharp decode. Failure stays
+  // soft (null -> the dependent checks remain pending).
+  const vision = await analyzeImageForensics(input.bytes, input.fileKind);
 
   const [claimExtracted, referenceFlag] = await Promise.all([
     extractClaimFields(input.bytes, input.fileKind, input.claimType),
@@ -210,21 +209,7 @@ export async function analyzeReceipt(input: AnalyzeInput): Promise<AnalysisResul
   // noisy OCR ones; otherwise fall back to the OCR extraction unchanged.
   const moneyFields = claimExtracted ? extracted : commonExtracted;
   const moneyConfidence = claimExtracted ? 95 : confidence;
-  // Record which engine supplied the figures so the UI can attribute the
-  // decision: the AI receipt model when it ran, otherwise the external
-  // text-extraction tool (pdfjs text layer for digital PDFs, tesseract.js OCR
-  // for images / scanned PDFs).
-  const moneyEngine = claimExtracted
-    ? "ai-receipt"
-    : extractResult?.source === "pdf-text"
-      ? "pdfjs"
-      : "tesseract";
-  const arithmetic = arithmeticFlag(moneyFields, moneyConfidence);
-  const roundNumbers = roundNumbersFlag(moneyFields, moneyConfidence);
-  for (const flag of [arithmetic, roundNumbers]) {
-    flag.evidence = { ...(flag.evidence ?? {}), decisionEngine: moneyEngine };
-  }
-  flags.push(arithmetic, roundNumbers);
+  flags.push(arithmeticFlag(moneyFields, moneyConfidence));
   flags.push(fontConsistencyFlag(vision, input.fileKind));
   flags.push(physicalAlterationFlag(vision, input.fileKind));
 
