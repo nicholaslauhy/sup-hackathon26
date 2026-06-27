@@ -1,8 +1,12 @@
 import type { ExtractedFields, Flag } from "../types";
 import { arithmeticFlag, missingFieldsFlag } from "./shared";
 
+function finite(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
 function taxConsistencyFlag(fields: ExtractedFields): Flag {
-  if (fields.subtotal === undefined || fields.tax === undefined || fields.total === undefined) {
+  if (!finite(fields.subtotal) || !finite(fields.tax) || !finite(fields.total)) {
     return {
       id: "purchase-tax",
       title: "Purchase tax consistency",

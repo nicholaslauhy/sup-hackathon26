@@ -22,6 +22,10 @@ function approxEqual(a: number, b: number): boolean {
   return Math.abs(a - b) <= TOLERANCE;
 }
 
+function finite(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
 export function arithmeticFlag(fields: ExtractedFields | null, confidence: number): Flag {
   if (!fields || confidence < MIN_CONFIDENCE) return PENDING;
 
@@ -30,11 +34,11 @@ export function arithmeticFlag(fields: ExtractedFields | null, confidence: numbe
 
   const itemsSum =
     lineItems && lineItems.length
-      ? round2(lineItems.reduce((acc, item) => acc + item.amount, 0))
+      ? round2(lineItems.reduce((acc, item) => acc + (finite(item.amount) ? item.amount : 0), 0))
       : undefined;
 
   // Line items should sum to the printed subtotal.
-  if (itemsSum !== undefined && subtotal !== undefined) {
+  if (itemsSum !== undefined && finite(subtotal)) {
     checks.push({ label: "line items vs subtotal", expected: subtotal, actual: itemsSum });
   }
 
@@ -42,8 +46,8 @@ export function arithmeticFlag(fields: ExtractedFields | null, confidence: numbe
   // actually exposes a subtotal. Inferring a subtotal from loosely parsed
   // lines is unsafe: trip distance, card values, and other numeric text can
   // look like receipt amounts even when the text layer itself is accurate.
-  if (subtotal !== undefined && total !== undefined) {
-    checks.push({ label: "subtotal + tax vs total", expected: total, actual: round2(subtotal + (tax ?? 0)) });
+  if (finite(subtotal) && finite(total)) {
+    checks.push({ label: "subtotal + tax vs total", expected: total, actual: round2(subtotal + (finite(tax) ? tax : 0)) });
   }
 
   if (!checks.length) return PENDING;

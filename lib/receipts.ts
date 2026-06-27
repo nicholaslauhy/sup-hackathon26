@@ -39,8 +39,28 @@ export type ClaimHistoryRecord = {
 };
 
 async function readJson<T>(response: Response): Promise<T> {
-  const body = await response.json();
-  if (!response.ok) throw new Error(body.error ?? "The request could not be completed.");
+  const text = await response.text();
+  let body: { error?: string } | T | null = null;
+
+  if (text.trim()) {
+    try {
+      body = JSON.parse(text) as { error?: string } | T;
+    } catch {
+      if (!response.ok) {
+        throw new Error("The server returned an unreadable error response.");
+      }
+      throw new Error("The server returned an unreadable response.");
+    }
+  }
+
+  if (!response.ok) {
+    const error = body && typeof body === "object" && "error" in body
+      ? body.error
+      : null;
+    throw new Error(error ?? "The request could not be completed.");
+  }
+
+  if (!body) throw new Error("The server returned an empty response.");
   return body as T;
 }
 

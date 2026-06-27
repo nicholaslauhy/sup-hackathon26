@@ -35,30 +35,35 @@ async function loadReferences(claimType: ReceiptType): Promise<Reference[]> {
   const cached = cache.get(claimType);
   if (cached && Date.now() - cached.loadedAt < CACHE_MS) return cached.references;
 
-  const admin = createAdminClient();
-  const folder = FOLDERS[claimType];
-  const { data: entries, error } = await admin.storage.from(BUCKET).list(folder, {
-    limit: MAX_REFERENCES,
-    sortBy: { column: "name", order: "asc" },
-  });
-  if (error) return [];
-
-  const references: Reference[] = [];
-  for (const entry of entries ?? []) {
-    const kind = kindFromName(entry.name);
-    if (!kind) continue;
-    const { data, error: downloadError } = await admin.storage.from(BUCKET).download(`${folder}/${entry.name}`);
-    if (downloadError || !data) continue;
-    const bytes = Buffer.from(await data.arrayBuffer());
-    references.push({
-      name: entry.name,
-      contentHash: contentHash(bytes),
-      perceptualHash: await perceptualHash(bytes, kind),
+  try {
+    const admin = createAdminClient();
+    const folder = FOLDERS[claimType];
+    const { data: entries, error } = await admin.storage.from(BUCKET).list(folder, {
+      limit: MAX_REFERENCES,
+      sortBy: { column: "name", order: "asc" },
     });
-  }
+    if (error) return [];
 
-  cache.set(claimType, { loadedAt: Date.now(), references });
-  return references;
+    const references: Reference[] = [];
+    for (const entry of entries ?? []) {
+      const kind = kindFromName(entry.name);
+      if (!kind) continue;
+      const { data, error: downloadError } = await admin.storage.from(BUCKET).download(`${folder}/${entry.name}`);
+      if (downloadError || !data) continue;
+      const bytes = Buffer.from(await data.arrayBuffer());
+      references.push({
+        name: entry.name,
+        contentHash: contentHash(bytes),
+        perceptualHash: await perceptualHash(bytes, kind),
+      });
+    }
+
+    cache.set(claimType, { loadedAt: Date.now(), references });
+    return references;
+  } catch (error) {
+    console.warn("Authentic reference comparison unavailable:", error);
+    return [];
+  }
 }
 
 export async function authenticReferenceFlag(

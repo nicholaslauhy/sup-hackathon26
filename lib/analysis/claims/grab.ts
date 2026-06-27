@@ -4,6 +4,10 @@ import { missingFieldsFlag } from "./shared";
 type GrabFields = NonNullable<ExtractedFields["grab"]>;
 type GrabKind = NonNullable<GrabFields["receiptKind"]>;
 
+function finite(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
 function receiptKind(fields: ExtractedFields): GrabKind | null {
   const explicit = fields.grab?.receiptKind;
   if (explicit) return explicit;
@@ -164,10 +168,12 @@ function timingFlag(fields: ExtractedFields, kind: GrabKind | null): Flag {
 function monetaryFlag(fields: ExtractedFields): Flag {
   const grab = fields.grab ?? {};
   const lineItems = fields.lineItems ?? [];
+  const lineItemAmounts = lineItems.map((item) => item.amount).filter(finite);
   const complete = grab.lineItemsComplete === true;
+  const displayedTotal = finite(fields.total) ? fields.total : null;
 
-  if (fields.total === undefined || lineItems.length === 0 || !complete) {
-    const extractedTotal = lineItems.reduce((sum, item) => sum + item.amount, 0);
+  if (displayedTotal === null || lineItemAmounts.length !== lineItems.length || lineItems.length === 0 || !complete) {
+    const extractedTotal = lineItemAmounts.reduce((sum, amount) => sum + amount, 0);
     return {
       id: "grab-arithmetic",
       title: "Grab charge breakdown incomplete",
@@ -176,15 +182,15 @@ function monetaryFlag(fields: ExtractedFields): Flag {
       explanation: "Every displayed monetary row must be extracted before the checker can make a reliable arithmetic judgment. Incomplete extraction is not scored as fraud risk.",
       evidence: {
         extractedRows: lineItems.length,
-        extractedRowsTotal: lineItems.length ? Number(extractedTotal.toFixed(2)) : null,
-        displayedTotal: fields.total ?? null,
+        extractedRowsTotal: lineItemAmounts.length ? Number(extractedTotal.toFixed(2)) : null,
+        displayedTotal,
         lineItemsComplete: grab.lineItemsComplete ?? null,
       },
     };
   }
 
-  const expected = lineItems.reduce((sum, item) => sum + item.amount, 0);
-  const mismatch = Math.abs(expected - fields.total) > 0.02;
+  const expected = lineItemAmounts.reduce((sum, amount) => sum + amount, 0);
+  const mismatch = Math.abs(expected - displayedTotal) > 0.02;
   return mismatch
     ? {
         id: "grab-arithmetic",
@@ -195,8 +201,8 @@ function monetaryFlag(fields: ExtractedFields): Flag {
         evidence: {
           calculationSource: "complete extracted charge rows",
           calculatedTotal: Number(expected.toFixed(2)),
-          displayedTotal: fields.total,
-          difference: Number((fields.total - expected).toFixed(2)),
+          displayedTotal,
+          difference: Number((displayedTotal - expected).toFixed(2)),
         },
       }
     : {
@@ -208,7 +214,7 @@ function monetaryFlag(fields: ExtractedFields): Flag {
         evidence: {
           calculationSource: "complete extracted charge rows",
           calculatedTotal: Number(expected.toFixed(2)),
-          displayedTotal: fields.total,
+          displayedTotal,
         },
       };
 }

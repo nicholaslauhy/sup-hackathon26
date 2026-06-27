@@ -57,6 +57,27 @@ test("incomplete charge extraction is pending and never scored as a mismatch", (
   assert.notEqual(arithmetic.status, "triggered");
 });
 
+test("null Grab total is pending instead of crashing", () => {
+  const fields = {
+    total: null,
+    lineItems: [
+      { description: "Fare", amount: 20.1 },
+      { description: "Platform fee", amount: 1.2 },
+    ],
+    grab: {
+      receiptKind: "transport",
+      bookingId: "A-789",
+      serviceType: "JustGrab",
+      pickup: "A",
+      dropoff: "B",
+      lineItemsComplete: true,
+    },
+  } as unknown as ExtractedFields;
+
+  const arithmetic = flag(fields, "grab-arithmetic");
+  assert.equal(arithmetic.status, "pending");
+});
+
 test("GrabFood does not require transport pickup and drop-off fields", () => {
   const fields: ExtractedFields = {
     merchant: "Example Restaurant",

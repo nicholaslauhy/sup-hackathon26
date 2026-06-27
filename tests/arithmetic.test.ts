@@ -35,3 +35,14 @@ test("flags a mismatch in an explicitly printed amount block", () => {
 
   assert.equal(result.status, "triggered");
 });
+
+test("null extracted amounts stay pending instead of crashing", () => {
+  const result = arithmeticFlag({
+    subtotal: null,
+    tax: null,
+    total: null,
+    lineItems: [{ description: "Fare", amount: 20 }],
+  } as never, 95);
+
+  assert.equal(result.status, "pending");
+});
