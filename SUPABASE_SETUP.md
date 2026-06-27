@@ -26,6 +26,16 @@ supabase/migrations/002_create_receipts.sql
 
 This creates the `receipts` table (one row per checked receipt and its analysis result), enables Row Level Security so members see only their own checks while the admin sees all, and creates a private `receipts` storage bucket for the uploaded files. Uploaded files are written by the server using the secret key; the bucket is not publicly readable.
 
+## 2c. Add the ignored-flags column
+
+Run the complete contents of:
+
+```text
+supabase/migrations/003_add_ignored_flags.sql
+```
+
+This adds the `ignored_flags` column so HR can mark individual fraud-check flags as false positives. It is additive (existing rows default to an empty array). Skipping it makes `GET /api/receipts` return 500 for the admin, because the receipts query selects this column.
+
 ## 3. Configure environment variables
 
 Copy `.env.example` to `.env.local` and fill in the three values from the Supabase project's API settings:

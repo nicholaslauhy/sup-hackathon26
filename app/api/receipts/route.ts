@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 // Row visibility is also enforced by RLS, so the session client returns the
 // correct subset either way.
 const SELECT_WITH_UPLOADER =
-  "id,uploaded_by,claim_type,file_name,file_kind,score,tier,result,final_decision,status,created_at,reviewed_at,uploader:profiles!receipts_uploaded_by_fkey(name,email)";
+  "id,uploaded_by,claim_type,file_name,file_kind,score,tier,result,final_decision,status,created_at,reviewed_at,ignored_flags,uploader:profiles!receipts_uploaded_by_fkey(name,email)";
 const MEMBER_SELECT =
   "id,claim_type,file_name,final_decision,status,created_at,reviewed_at";
 

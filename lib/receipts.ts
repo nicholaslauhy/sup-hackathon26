@@ -16,6 +16,8 @@ export type ReceiptRecord = {
   status: string;
   createdAt: string;
   reviewedAt: string | null;
+  // Flag ids HR has dismissed as false positives (e.g. a misfired AI check).
+  ignoredFlags: string[];
   uploader: { name: string; email: string } | null;
 };
 
@@ -53,6 +55,18 @@ export async function recordDecision(id: string, decision: "authentic" | "reject
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ decision }),
+    }),
+  ).then((body) => body.receipt);
+}
+
+// HR marks a fraud-check flag as a false positive (or restores it). Sends the
+// full desired set of ignored flag ids; the server de-duplicates and persists.
+export async function setIgnoredFlags(id: string, ignoredFlags: string[]): Promise<ReceiptRecord> {
+  return readJson<{ receipt: ReceiptRecord }>(
+    await fetch(`/api/receipts/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ignoredFlags }),
     }),
   ).then((body) => body.receipt);
 }

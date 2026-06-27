@@ -23,10 +23,24 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     return NextResponse.json({ error: "Only HR can approve or reject claims." }, { status: 403 });
   }
 
-  const body = await request.json() as { decision?: string };
-  const decision = body.decision as FinalDecision;
-  if (!DECISIONS.includes(decision)) {
-    return NextResponse.json({ error: "Decision must be 'authentic' or 'rejected'." }, { status: 400 });
+  const body = await request.json() as { decision?: string; ignoredFlags?: unknown };
+
+  // Two PATCH actions share this route: recording the final reimbursement
+  // decision, and marking AI/tool flags as false positives. A request carries
+  // one or the other.
+  let update: Record<string, unknown>;
+  if (body.ignoredFlags !== undefined) {
+    if (!Array.isArray(body.ignoredFlags) || !body.ignoredFlags.every((value) => typeof value === "string")) {
+      return NextResponse.json({ error: "ignoredFlags must be an array of flag ids." }, { status: 400 });
+    }
+    // De-duplicate so the column never accumulates repeats.
+    update = { ignored_flags: Array.from(new Set(body.ignoredFlags as string[])) };
+  } else {
+    const decision = body.decision as FinalDecision;
+    if (!DECISIONS.includes(decision)) {
+      return NextResponse.json({ error: "Decision must be 'authentic' or 'rejected'." }, { status: 400 });
+    }
+    update = { final_decision: decision, reviewed_at: new Date().toISOString() };
   }
 
   const admin = createAdminClient();
@@ -39,11 +53,11 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
 
   const { data: updated, error: updateError } = await admin
     .from("receipts")
-    .update({ final_decision: decision, reviewed_at: new Date().toISOString() })
+    .update(update)
     .eq("id", id)
     .select(RECEIPT_COLUMNS)
     .single();
-  if (updateError || !updated) return NextResponse.json({ error: "Unable to save the decision." }, { status: 500 });
+  if (updateError || !updated) return NextResponse.json({ error: "Unable to save the change." }, { status: 500 });
 
   return NextResponse.json({ receipt: toReceiptRecord(updated as ReceiptRow) });
 }
