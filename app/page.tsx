@@ -1202,7 +1202,7 @@ function tsvToClientLines(tsv: unknown, imageWidth: number, imageHeight: number)
     if (confidence !== null && confidence >= 0) current.confidences.push(confidence);
   });
 
-  return [...groups.values()]
+  return Array.from(groups.values())
     .map((group) => ({
       text: group.words.join(" "),
       x: group.left / imageWidth,
