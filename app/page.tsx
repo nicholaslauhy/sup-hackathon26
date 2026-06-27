@@ -2,7 +2,7 @@
 
 /* eslint-disable @next/next/no-img-element */
 
-import { ChangeEvent, FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Account, PublicAccount, Role, changePassword, createAccount, createFirstAdmin, deleteAccount, getAccounts, getCurrentAccount, hasAnyAccounts, login, logout } from "@/lib/auth";
 import { FinalDecision, ReceiptRecord, analyzeReceipt, deleteReceipt, getReceipts, recordDecision } from "@/lib/receipts";
 import type { AnalysisResult, Flag, Tier } from "@/lib/analysis/types";
@@ -918,6 +918,255 @@ function ReceiptHistory({ showMember, canEdit = false, refreshKey = 0, eyebrow, 
   </section>;
 }
 
+function getLast12Months(): { key: string; label: string }[] {
+  const months: { key: string; label: string }[] = [];
+  const now = new Date();
+  for (let i = 11; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    months.push({
+      key: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`,
+      label: new Intl.DateTimeFormat(undefined, { month: "short" }).format(d),
+    });
+  }
+  return months;
+}
+
+type UserClaimsSummary = {
+  name: string;
+  email: string;
+  total: number;
+  avgScore: number;
+  tierCounts: Record<Tier, number>;
+  monthlyCounts: number[];
+};
+
+function buildUserClaimsSummaries(receipts: ReceiptRecord[], accounts: PublicAccount[], months: { key: string }[]): UserClaimsSummary[] {
+  const cutoff = new Date();
+  cutoff.setMonth(cutoff.getMonth() - 11, 1);
+  cutoff.setHours(0, 0, 0, 0);
+
+  const byUser = new Map<string, UserClaimsSummary>();
+  for (const account of accounts) {
+    byUser.set(account.email, { name: account.name, email: account.email, total: 0, avgScore: 0, tierCounts: { green: 0, amber: 0, red: 0 }, monthlyCounts: months.map(() => 0) });
+  }
+  for (const r of receipts) {
+    const created = new Date(r.createdAt);
+    if (created < cutoff) continue;
+    const email = r.uploader?.email ?? "unknown";
+    const name = r.uploader?.name ?? "Unknown";
+    if (!byUser.has(email)) {
+      byUser.set(email, { name, email, total: 0, avgScore: 0, tierCounts: { green: 0, amber: 0, red: 0 }, monthlyCounts: months.map(() => 0) });
+    }
+    const summary = byUser.get(email)!;
+    const monthKey = `${created.getFullYear()}-${String(created.getMonth() + 1).padStart(2, "0")}`;
+    const monthIndex = months.findIndex((m) => m.key === monthKey);
+    if (monthIndex >= 0) summary.monthlyCounts[monthIndex] += 1;
+    summary.total += 1;
+    summary.tierCounts[r.tier] += 1;
+    summary.avgScore += r.score;
+  }
+
+  return Array.from(byUser.values())
+    .sort((a, b) => b.total - a.total || a.name.localeCompare(b.name))
+    .map((summary) => ({ ...summary, avgScore: summary.total ? Math.round(summary.avgScore / summary.total) : 0 }));
+}
+
+function monthKeyOf(dateValue: string) {
+  const d = new Date(dateValue);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function monthLabelOf(key: string) {
+  const [year, month] = key.split("-").map(Number);
+  return new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric" }).format(new Date(year, month - 1, 1));
+}
+
+function groupReceiptsByKey(receipts: ReceiptRecord[], keyOf: (r: ReceiptRecord) => string): { key: string; receipts: ReceiptRecord[] }[] {
+  const groups = new Map<string, ReceiptRecord[]>();
+  for (const r of receipts) {
+    const key = keyOf(r);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(r);
+  }
+  return Array.from(groups.entries())
+    .map(([key, list]) => ({ key, receipts: list }))
+    .sort((a, b) => b.key.localeCompare(a.key));
+}
+
+function ReceiptGroupTable({ receipts, onReview }: { receipts: ReceiptRecord[]; onReview: (id: string) => void }) {
+  return <div className="history-table no-member">
+    <div className="history-row history-header"><span>Type</span><span>Risk</span><span className="history-score-col">Score</span><span>Decision</span><span>Checked</span><span>Reviewed</span><span className="history-action-col" /></div>
+    {receipts.map((r) => <div className="history-row history-row-static" key={r.id}>
+      <span>{claimLabels[r.claimType] ?? r.claimType}</span>
+      <span><em className={`tier-dot ${r.tier}`} />{tierMeta[r.tier].label}</span>
+      <span className="history-score-col">{r.score}</span>
+      <span className={`decision-pill ${r.finalDecision}`}>{r.finalDecision}</span>
+      <span className="history-date"><span>Checked</span>{formatDateTime(r.createdAt)}</span>
+      <span className="history-date"><span>Reviewed</span>{formatHistoryReviewed(r)}</span>
+      <button type="button" className="history-review" onClick={() => onReview(r.id)}>Review</button>
+    </div>)}
+  </div>;
+}
+
+function MemberReceiptsModal({ name, email, receipts, onClose, onChange, onDeleted }: {
+  name: string;
+  email: string;
+  receipts: ReceiptRecord[];
+  onClose: () => void;
+  onChange: (updated: ReceiptRecord) => void;
+  onDeleted: (id: string) => void;
+}) {
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [tab, setTab] = useState<"recent" | "history">("recent");
+  const selected = receipts.find((r) => r.id === selectedId) ?? null;
+
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) { if (event.key === "Escape" && !selectedId) onClose(); }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose, selectedId]);
+
+  const cutoff = useMemo(() => { const d = new Date(); d.setMonth(d.getMonth() - 11, 1); d.setHours(0, 0, 0, 0); return d; }, []);
+  const recent = useMemo(() => receipts.filter((r) => new Date(r.createdAt) >= cutoff), [receipts, cutoff]);
+  const earlier = useMemo(() => receipts.filter((r) => new Date(r.createdAt) < cutoff), [receipts, cutoff]);
+  const monthGroups = useMemo(() => groupReceiptsByKey(recent, (r) => monthKeyOf(r.createdAt)), [recent]);
+  const yearGroups = useMemo(() => groupReceiptsByKey(earlier, (r) => String(new Date(r.createdAt).getFullYear())), [earlier]);
+
+  return <div className="modal-overlay" role="dialog" aria-modal="true" onClick={onClose}>
+    <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+      <button className="modal-close" aria-label="Close" onClick={onClose}>×</button>
+      <div className="history-head"><div><p className="eyebrow">MEMBER CLAIMS</p><h2>{name}</h2><p className="muted">{email}</p></div><span className="step-count">{receipts.length} total</span></div>
+
+      <div className="member-tabs">
+        <button type="button" className={`member-tab ${tab === "recent" ? "active" : ""}`} onClick={() => setTab("recent")}>Past 12 months ({recent.length})</button>
+        <button type="button" className={`member-tab ${tab === "history" ? "active" : ""}`} onClick={() => setTab("history")}>Past years ({earlier.length})</button>
+      </div>
+
+      {tab === "recent"
+        ? (monthGroups.length === 0
+          ? <div className="empty-state"><span>00</span><p>No claims in the past 12 months.</p></div>
+          : monthGroups.map((group) => <div className="claims-month-group" key={group.key}>
+              <h3 className="claims-month-heading">{monthLabelOf(group.key)} <span className="step-count">{group.receipts.length}</span></h3>
+              <ReceiptGroupTable receipts={group.receipts} onReview={setSelectedId} />
+            </div>))
+        : (yearGroups.length === 0
+          ? <div className="empty-state"><span>00</span><p>No claims from earlier years.</p></div>
+          : yearGroups.map((group) => <div className="claims-month-group" key={group.key}>
+              <h3 className="claims-month-heading">{group.key} <span className="step-count">{group.receipts.length}</span></h3>
+              <ReceiptGroupTable receipts={group.receipts} onReview={setSelectedId} />
+            </div>))}
+    </div>
+    {selected && <ReceiptDetailModal
+      receipt={selected}
+      canEdit
+      onClose={() => setSelectedId(null)}
+      onChange={(updated) => { onChange(updated); }}
+      onDeleted={(id) => { onDeleted(id); setSelectedId(null); }}
+    />}
+  </div>;
+}
+
+function UserClaimsDashboard({ accounts }: { accounts: PublicAccount[] }) {
+  const [receipts, setReceipts] = useState<ReceiptRecord[] | null>(null);
+  const [error, setError] = useState("");
+  const [search, setSearch] = useState("");
+  const [selectedMember, setSelectedMember] = useState<{ name: string; email: string } | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      try { const data = await getReceipts(); if (active) setReceipts(data); }
+      catch (reason) { if (active) setError(reason instanceof Error ? reason.message : "Unable to load claim data."); }
+    })();
+    return () => { active = false; };
+  }, []);
+
+  const months = useMemo(() => getLast12Months(), []);
+  const summaries = useMemo(() => receipts ? buildUserClaimsSummaries(receipts, accounts, months) : [], [receipts, accounts, months]);
+  const maxMonthly = Math.max(1, ...summaries.flatMap((s) => s.monthlyCounts));
+  const query = search.trim().toLowerCase();
+  const visibleSummaries = query
+    ? summaries.filter((s) => s.name.toLowerCase().includes(query) || s.email.toLowerCase().includes(query))
+    : summaries;
+  const activeSummaries = visibleSummaries.filter((s) => s.total > 0);
+  const emptySummaries = visibleSummaries.filter((s) => s.total === 0);
+
+  return <section className="surface wide">
+    <div className="history-head">
+      <div><p className="eyebrow">CLAIM ACTIVITY</p><h2>Past 12 months by member</h2></div>
+      {receipts && <span className="step-count">{visibleSummaries.length} of {summaries.length} member{summaries.length === 1 ? "" : "s"}</span>}
+    </div>
+    {receipts && summaries.length > 0 && <input
+      type="search"
+      className="claims-search"
+      placeholder="Search by name or email"
+      value={search}
+      onChange={(e) => setSearch(e.target.value)}
+      aria-label="Search members by name or email"
+    />}
+    {error ? <p className="message error" role="alert">{error}</p>
+      : !receipts ? <p className="muted">Loading...</p>
+      : summaries.length === 0 ? <div className="empty-state"><span>00</span><p>No members yet.</p></div>
+      : visibleSummaries.length === 0 ? <div className="empty-state"><span>00</span><p>No members match &ldquo;{search}&rdquo;.</p></div>
+      : <>
+          {activeSummaries.length > 0 && <div className="claims-dashboard">
+            {activeSummaries.map((s) => <button
+              type="button"
+              className="claims-card claims-card-button"
+              key={s.email}
+              onClick={() => setSelectedMember({ name: s.name, email: s.email })}
+            >
+              <div className="claims-card-head">
+                <div><strong>{s.name}</strong><span className="claims-card-email">{s.email}</span></div>
+                <div className="claims-card-stats">
+                  <span className="step-count">{s.total} claim{s.total === 1 ? "" : "s"}</span>
+                  <span className="step-count">Avg score {s.avgScore}</span>
+                </div>
+              </div>
+              <div className="claims-tier-row">
+                <span><em className="tier-dot green" />{s.tierCounts.green} low</span>
+                <span><em className="tier-dot amber" />{s.tierCounts.amber} some</span>
+                <span><em className="tier-dot red" />{s.tierCounts.red} high</span>
+              </div>
+              <div className="claims-bar-chart">
+                {s.monthlyCounts.map((count, i) => <div className="claims-bar-col" key={months[i].key}>
+                  <div className="claims-bar" style={{ height: count ? `${Math.max(6, (count / maxMonthly) * 64)}px` : "2px" }} title={`${months[i].label}: ${count}`} />
+                  <span className="claims-bar-label">{months[i].label}</span>
+                </div>)}
+              </div>
+            </button>)}
+            {activeSummaries.length % 2 === 1 && <div className="claims-card claims-card-placeholder" aria-hidden="true" />}
+          </div>}
+
+          {emptySummaries.length > 0 && <div className="claims-empty-section">
+            <p className="claims-empty-heading">No claims in the past 12 months</p>
+            <div className="claims-dashboard">
+              {emptySummaries.map((s) => <button
+                type="button"
+                className="claims-card claims-card-button claims-card-empty"
+                key={s.email}
+                onClick={() => setSelectedMember({ name: s.name, email: s.email })}
+              >
+                <div className="claims-card-head">
+                  <div><strong>{s.name}</strong><span className="claims-card-email">{s.email}</span></div>
+                  <div className="claims-card-stats"><span className="step-count">0 claims</span></div>
+                </div>
+              </button>)}
+              {emptySummaries.length % 2 === 1 && <div className="claims-card claims-card-placeholder" aria-hidden="true" />}
+            </div>
+          </div>}
+        </>}
+    {selectedMember && <MemberReceiptsModal
+      name={selectedMember.name}
+      email={selectedMember.email}
+      receipts={(receipts ?? []).filter((r) => r.uploader?.email === selectedMember.email)}
+      onClose={() => setSelectedMember(null)}
+      onChange={(updated) => setReceipts((list) => list?.map((r) => r.id === updated.id ? updated : r) ?? list)}
+      onDeleted={(id) => setReceipts((list) => list?.filter((r) => r.id !== id) ?? list)}
+    />}
+  </section>;
+}
+
 function ProfileTab({ account }: { account: Account }) {
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -970,7 +1219,7 @@ function Dashboard({ account, onLogout }: { account: Account; onLogout: () => vo
   const [membersError, setMembersError] = useState("");
   const [accountMessage, setAccountMessage] = useState<{ kind: "error" | "success"; text: string } | null>(null);
   const [memberView, setMemberView] = useState<"overview" | "receipts">("overview");
-  const [adminView, setAdminView] = useState<"overview" | "members">("overview");
+  const [adminView, setAdminView] = useState<"overview" | "members" | "add">("overview");
   const [showProfile, setShowProfile] = useState(false);
   const isAdmin = account.role === "admin";
   const refresh = useCallback(async () => {
@@ -1013,7 +1262,8 @@ function Dashboard({ account, onLogout }: { account: Account; onLogout: () => vo
       <aside className="sidebar"><p className="nav-label">WORKSPACE</p>
         {isAdmin ? <>
               <button type="button" className={`nav-item ${!showProfile && adminView === "overview" ? "active" : ""}`} onClick={() => { setShowProfile(false); setAdminView("overview"); }}>Overview</button>
-              <button type="button" className={`nav-item ${!showProfile && adminView === "members" ? "active" : ""}`} onClick={() => { setShowProfile(false); setAdminView("members"); }}>Add members</button>
+              <button type="button" className={`nav-item ${!showProfile && adminView === "members" ? "active" : ""}`} onClick={() => { setShowProfile(false); setAdminView("members"); }}>Dashboard</button>
+              <button type="button" className={`nav-item ${!showProfile && adminView === "add" ? "active" : ""}`} onClick={() => { setShowProfile(false); setAdminView("add"); }}>Add members</button>
             </>
           : <>
               <button type="button" className={`nav-item ${!showProfile && memberView === "overview" ? "active" : ""}`} onClick={() => { setShowProfile(false); setMemberView("overview"); }}>Overview</button>
@@ -1025,6 +1275,8 @@ function Dashboard({ account, onLogout }: { account: Account; onLogout: () => vo
         {showProfile ? <ProfileTab account={account} />
           : isAdmin ? adminView === "overview"
           ? <ReceiptHistory showMember canEdit eyebrow="CHECK HISTORY" title="Receipt checks" emptyText="No receipts have been checked yet." />
+          : adminView === "members"
+          ? <UserClaimsDashboard accounts={accounts} />
           : <div className="admin-grid">
               <section className="surface"><h2>Add an account</h2><p>Send a private password setup invite to an admin or a member.</p><AddAccount onAdded={refresh} /></section>
               <section className="surface"><h2>Members</h2><p>{accounts.length} account{accounts.length === 1 ? "" : "s"}</p>
