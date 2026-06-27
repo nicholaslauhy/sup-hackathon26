@@ -1460,10 +1460,10 @@ button.nav-item:hover:not(.active) { color:var(--green); }
 
 .receipt-box {
   position: absolute;
-  border: 3px solid;
-  border-radius: 7px;
-  background: rgba(255, 255, 255, .08);
-  box-shadow: 0 0 0 9999px rgba(20, 44, 40, .03), 0 8px 20px rgba(20, 44, 40, .18);
+  border: 2px solid;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, .04);
+  box-shadow: 0 0 0 9999px rgba(20, 44, 40, .025), 0 6px 18px rgba(20, 44, 40, .16);
 }
 
 .receipt-box.triggered {
@@ -1483,18 +1483,20 @@ button.nav-item:hover:not(.active) { color:var(--green); }
 
 .receipt-box span {
   position: absolute;
-  left: -3px;
-  top: -30px;
-  max-width: 220px;
-  padding: 5px 8px;
-  border-radius: 999px;
+  left: -2px;
+  bottom: calc(100% + 8px);
+  max-width: min(280px, calc(100vw - 96px));
+  padding: 7px 10px;
+  border-radius: 10px;
   color: white;
   background: #142c28;
-  font: 800 11px Arial, Helvetica, sans-serif;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  box-shadow: 0 8px 18px rgba(20, 44, 40, .20);
+  font: 800 11px/1.35 Arial, Helvetica, sans-serif;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
 }
+
 
 .receipt-preview-frame {
   height: 68vh;
@@ -1776,4 +1778,219 @@ button.nav-item:hover:not(.active) { color:var(--green); }
   .arithmetic-evidence-grid {
     grid-template-columns: 1fr;
   }
+}
+
+
+/* Receipt arithmetic error overlays */
+.receipt-box.circle {
+  border-radius: 999px;
+}
+
+.receipt-box.synthetic {
+  border-style: dashed;
+}
+
+
+.arithmetic-basis {
+  margin: 0;
+  color: #8b9893;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+/* v3: arithmetic mismatch fallback box */
+.receipt-box.synthetic {
+  border-style: dashed;
+  border-width: 2px;
+}
+
+.receipt-box.synthetic span::after {
+  content: "";
+}
+
+/* v4: OCR-derived boxes + human correction editor */
+.bbox-editor-panel { width:100%; padding:12px; border:1px solid #dbe5df; border-radius:12px; background:#fbfcfa; display:grid; gap:8px; }
+.bbox-editor-panel strong { color:var(--ink); font-size:12px; }
+.bbox-editor-panel span { color:var(--muted); font-size:11px; line-height:1.35; }
+.bbox-editor-panel > div { display:flex; flex-wrap:wrap; gap:8px; }
+.bbox-save-button { height:36px; min-width:96px; padding:0 14px; margin-top:0; font-size:12px; }
+.receipt-preview-stage.drawing-active { cursor:crosshair; user-select:none; }
+.receipt-draw-layer { position:absolute; inset:0; z-index:5; cursor:crosshair; background:rgba(15,92,77,.025); touch-action:none; }
+.receipt-box.user-edited { border-style:solid; border-color:#0f5c4d; background:rgba(15,92,77,.12); }
+.receipt-box.user-edited span { background:#0f5c4d; }
+
+/* v4.1: reviewer comment field for manual bounding boxes */
+.bbox-editor-panel label {
+  display: grid;
+  gap: 6px;
+}
+
+.bbox-editor-panel label span {
+  color: #8b9893;
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .5px;
+}
+
+.bbox-editor-panel textarea {
+  width: 100%;
+  min-height: 72px;
+  resize: vertical;
+  padding: 9px 10px;
+  border: 1px solid #ccd9d3;
+  border-radius: 8px;
+  color: var(--ink);
+  background: white;
+  font: 12px/1.4 Arial, Helvetica, sans-serif;
+}
+
+.bbox-editor-panel textarea:focus {
+  outline: 2px solid #cfe7dc;
+  border-color: var(--green);
+}
+
+/* v5: automatic OCR status for client-side box detection */
+.ocr-status {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #dbe5df;
+  border-radius: 12px;
+  background: #fbfcfa;
+  display: grid;
+  gap: 4px;
+}
+
+.ocr-status span {
+  color: #0f5c4d;
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .5px;
+}
+
+.ocr-status small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.ocr-status.missing,
+.ocr-status.error {
+  border-color: #ead7d4;
+  background: #fffaf8;
+}
+
+.ocr-status.missing span,
+.ocr-status.error span {
+  color: #8f3b35;
+}
+
+/* v8: estimated OCR row circle */
+.receipt-box.synthetic.circle {
+  border-radius: 999px;
+  border-style: dashed;
+  border-width: 2px;
+  background: rgba(210, 59, 49, .10);
+}
+
+/* v9: show all flagged regions and choose which manual box to edit */
+.bbox-editor-panel select {
+  width: 100%;
+  height: 38px;
+  padding: 0 10px;
+  border: 1px solid #ccd9d3;
+  border-radius: 8px;
+  color: var(--ink);
+  background: white;
+  font: 12px Arial, Helvetica, sans-serif;
+}
+
+.bbox-editor-panel select:focus {
+  outline: 2px solid #cfe7dc;
+  border-color: var(--green);
+}
+
+.bbox-missing-note {
+  display: block;
+  color: #8f3b35;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+
+/* Fresh automatic total-mismatch bounding boxes */
+.auto-box-status {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid #dbe5df;
+  border-radius: 12px;
+  background: #fbfcfa;
+  display: grid;
+  gap: 5px;
+}
+
+.auto-box-status strong {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.auto-box-status span,
+.auto-box-status small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.auto-box-status small {
+  color: #8f3b35;
+}
+
+.receipt-box.synthetic {
+  border-style: dashed;
+  border-width: 2px;
+}
+
+.receipt-box.user-edited {
+  border-style: solid;
+  border-color: #0f5c4d;
+  background: rgba(15, 92, 77, .12);
+}
+
+.receipt-box.user-edited span {
+  background: #0f5c4d;
+}
+
+.bbox-editor-panel select {
+  width: 100%;
+  height: 38px;
+  padding: 0 10px;
+  border: 1px solid #ccd9d3;
+  border-radius: 8px;
+  color: var(--ink);
+  background: white;
+  font: 12px Arial, Helvetica, sans-serif;
+}
+
+.bbox-editor-panel select:focus {
+  outline: 2px solid #cfe7dc;
+  border-color: var(--green);
+}
+
+/* Drag preview fix: show the in-progress box while the user is dragging */
+.receipt-preview-stage.drawing-active .receipt-overlay {
+  z-index: 6;
+}
+
+.receipt-preview-stage.drawing-active .receipt-box.user-edited {
+  border-style: dashed;
+  border-width: 2px;
+  border-color: #0f5c4d;
+  background: rgba(15, 92, 77, .16);
+  box-shadow: 0 0 0 9999px rgba(15, 92, 77, .035), 0 8px 20px rgba(15, 92, 77, .20);
+}
+
+.receipt-preview-stage.drawing-active .receipt-draw-layer {
+  z-index: 5;
+  background: rgba(15, 92, 77, .015);
 }
