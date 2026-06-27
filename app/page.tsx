@@ -956,7 +956,7 @@ function formatMoneyLikeValue(value: unknown) {
 
 function evidenceValue(value: unknown): React.ReactNode {
   if (typeof value === "string") {
-    const parts = value.split(",").map((part) => part.trim()).filter(Boolean);
+    const parts = value.split(",").map((part) => part.trim()).filter((line): line is ClientOcrLine => line !== null);
     if (parts.length > 1) {
       return <ul className="evidence-list">{parts.map((part) => <li key={part}>{part}</li>)}</ul>;
     }
@@ -1002,10 +1002,10 @@ function evidenceValue(value: unknown): React.ReactNode {
 
 
 function normalizedCheckList(value: unknown) {
-  if (Array.isArray(value)) return value.map((item) => evidencePlainText(item)).filter(Boolean);
-  if (typeof value === "string") return value.split(",").map((item) => item.trim()).filter(Boolean);
+  if (Array.isArray(value)) return value.map((item) => evidencePlainText(item)).filter((line): line is ClientOcrLine => line !== null);
+  if (typeof value === "string") return value.split(",").map((item) => item.trim()).filter((line): line is ClientOcrLine => line !== null);
   if (value === null || value === undefined) return [] as string[];
-  return [evidencePlainText(value)].filter(Boolean);
+  return [evidencePlainText(value)].filter((line): line is ClientOcrLine => line !== null);
 }
 
 function ArithmeticEvidenceDetails({ flag }: { flag: Flag }) {
@@ -1131,7 +1131,7 @@ function tsvToClientLines(tsv: unknown, imageWidth: number, imageHeight: number)
   const rows = tsv
     .split(/\r?\n/)
     .map((row) => row.trimEnd())
-    .filter(Boolean);
+    .filter((line): line is ClientOcrLine => line !== null);
 
   if (rows.length < 2) return [];
 
@@ -1697,7 +1697,7 @@ function ReceiptFilePreview({
     setBoxComment(existing?.label ?? arithmeticFallbackLabel(activeEditFlag));
     setIsEditingBox(false);
     setDrawStart(null);
-  }, [activeEditFlag?.id, manualRegions, autoRegions]);
+  }, [activeEditFlag, activeEditFlag?.id, manualRegions, autoRegions]);
 
   function zoomOut() {
     setZoom((value) => Math.max(50, value - 25));
