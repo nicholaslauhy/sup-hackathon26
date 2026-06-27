@@ -1230,53 +1230,55 @@ function uniqueClientLines(lines: ClientOcrLine[]) {
 function tesseractLinesToClientLines(lines: unknown[], imageWidth: number, imageHeight: number): ClientOcrLine[] {
   if (!Array.isArray(lines) || imageWidth <= 0 || imageHeight <= 0) return [];
 
-  return lines
-    .map((line) => {
-      if (!isRecord(line)) return null;
+  const parsed: ClientOcrLine[] = [];
 
-      const text = String(line.text ?? "").trim();
-      if (!text) return null;
+  for (const line of lines) {
+    if (!isRecord(line)) continue;
 
-      const bbox = isRecord(line.bbox) ? line.bbox : line;
-      const x0 = readNumber(bbox.x0 ?? bbox.left ?? bbox.x);
-      const y0 = readNumber(bbox.y0 ?? bbox.top ?? bbox.y);
-      const x1 = readNumber(bbox.x1 ?? bbox.right);
-      const y1 = readNumber(bbox.y1 ?? bbox.bottom);
-      const width = readNumber(bbox.width ?? bbox.w);
-      const height = readNumber(bbox.height ?? bbox.h);
+    const text = String(line.text ?? "").trim();
+    if (!text) continue;
 
-      if (x0 === null || y0 === null) return null;
+    const bbox = isRecord(line.bbox) ? line.bbox : line;
+    const x0 = readNumber(bbox.x0 ?? bbox.left ?? bbox.x);
+    const y0 = readNumber(bbox.y0 ?? bbox.top ?? bbox.y);
+    const x1 = readNumber(bbox.x1 ?? bbox.right);
+    const y1 = readNumber(bbox.y1 ?? bbox.bottom);
+    const width = readNumber(bbox.width ?? bbox.w);
+    const height = readNumber(bbox.height ?? bbox.h);
 
-      const right = x1 ?? (width !== null ? x0 + width : null);
-      const bottom = y1 ?? (height !== null ? y0 + height : null);
-      if (right === null || bottom === null) return null;
+    if (x0 === null || y0 === null) continue;
 
-      const normalizedLine = {
-        text,
-        x: x0 / imageWidth,
-        y: y0 / imageHeight,
-        width: (right - x0) / imageWidth,
-        height: (bottom - y0) / imageHeight,
-        shape: "box" as const,
-        confidence: readNumber(line.confidence) ?? undefined,
-      };
+    const right = x1 ?? (width !== null ? x0 + width : null);
+    const bottom = y1 ?? (height !== null ? y0 + height : null);
+    if (right === null || bottom === null) continue;
 
-      if (
-        normalizedLine.x < 0 ||
-        normalizedLine.y < 0 ||
-        normalizedLine.width <= 0 ||
-        normalizedLine.height <= 0 ||
-        normalizedLine.x > 1 ||
-        normalizedLine.y > 1 ||
-        normalizedLine.width > 1 ||
-        normalizedLine.height > 1
-      ) {
-        return null;
-      }
+    const normalizedLine: ClientOcrLine = {
+      text,
+      x: x0 / imageWidth,
+      y: y0 / imageHeight,
+      width: (right - x0) / imageWidth,
+      height: (bottom - y0) / imageHeight,
+      shape: "box",
+      confidence: readNumber(line.confidence) ?? undefined,
+    };
 
-      return normalizedLine;
-    })
-    .filter((line): line is ClientOcrLine => Boolean(line));
+    if (
+      normalizedLine.x < 0 ||
+      normalizedLine.y < 0 ||
+      normalizedLine.width <= 0 ||
+      normalizedLine.height <= 0 ||
+      normalizedLine.x > 1 ||
+      normalizedLine.y > 1 ||
+      normalizedLine.width > 1 ||
+      normalizedLine.height > 1
+    ) {
+      continue;
+    }
+
+    parsed.push(normalizedLine);
+  }
+
+  return parsed;
 }
 
 function wordsToClientLines(words: unknown[], imageWidth: number, imageHeight: number): ClientOcrLine[] {
@@ -1308,7 +1310,7 @@ function wordsToClientLines(words: unknown[], imageWidth: number, imageHeight: n
         confidence: readNumber(word.confidence),
       };
     })
-    .filter((word): word is { text: string; x0: number; y0: number; x1: number; y1: number; confidence: number | null } => Boolean(word))
+    .filter((word): word is { text: string; x0: number; y0: number; x1: number; y1: number; confidence: number | null } => word !== null)
     .sort((a, b) => a.y0 - b.y0 || a.x0 - b.x0);
 
   const grouped: typeof parsedWords[] = [];
@@ -1325,25 +1327,32 @@ function wordsToClientLines(words: unknown[], imageWidth: number, imageHeight: n
     else grouped.push([word]);
   }
 
-  return grouped
-    .map((line) => {
-      const sorted = [...line].sort((a, b) => a.x0 - b.x0);
-      const x0 = Math.min(...sorted.map((word) => word.x0));
-      const y0 = Math.min(...sorted.map((word) => word.y0));
-      const x1 = Math.max(...sorted.map((word) => word.x1));
-      const y1 = Math.max(...sorted.map((word) => word.y1));
-      const confidenceValues = sorted.map((word) => word.confidence).filter((value): value is number => value !== null);
-      return {
-        text: sorted.map((word) => word.text).join(" "),
-        x: x0 / imageWidth,
-        y: y0 / imageHeight,
-        width: (x1 - x0) / imageWidth,
-        height: (y1 - y0) / imageHeight,
-        shape: "box" as const,
-        confidence: confidenceValues.length ? confidenceValues.reduce((sum, value) => sum + value, 0) / confidenceValues.length : undefined,
-      };
-    })
-    .filter((line) => line.x >= 0 && line.y >= 0 && line.width > 0 && line.height > 0 && line.x <= 1 && line.y <= 1 && line.width <= 1 && line.height <= 1);
+  const clientLines: ClientOcrLine[] = [];
+
+  for (const line of grouped) {
+    const sorted = [...line].sort((a, b) => a.x0 - b.x0);
+    const x0 = Math.min(...sorted.map((word) => word.x0));
+    const y0 = Math.min(...sorted.map((word) => word.y0));
+    const x1 = Math.max(...sorted.map((word) => word.x1));
+    const y1 = Math.max(...sorted.map((word) => word.y1));
+    const confidenceValues = sorted.map((word) => word.confidence).filter((value): value is number => value !== null);
+
+    const clientLine: ClientOcrLine = {
+      text: sorted.map((word) => word.text).join(" "),
+      x: x0 / imageWidth,
+      y: y0 / imageHeight,
+      width: (x1 - x0) / imageWidth,
+      height: (y1 - y0) / imageHeight,
+      shape: "box",
+      confidence: confidenceValues.length ? confidenceValues.reduce((sum, value) => sum + value, 0) / confidenceValues.length : undefined,
+    };
+
+    if (clientLine.x >= 0 && clientLine.y >= 0 && clientLine.width > 0 && clientLine.height > 0 && clientLine.x <= 1 && clientLine.y <= 1 && clientLine.width <= 1 && clientLine.height <= 1) {
+      clientLines.push(clientLine);
+    }
+  }
+
+  return clientLines;
 }
 
 function deriveRegionFromClientOcrLines(flag: Flag | null, lines: ClientOcrLine[]): EvidenceRegion[] {
