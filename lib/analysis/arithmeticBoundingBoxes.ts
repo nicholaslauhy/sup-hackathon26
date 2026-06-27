@@ -95,18 +95,20 @@ function findFirstByLabel(lines: MoneyLine[], predicate: (label: string) => bool
 }
 
 function findBestPayableLine(lines: MoneyLine[]): MoneyLine | null {
-  const best = lines.reduce<{ line: MoneyLine; score: number; index: number } | null>((current, line, index) => {
+  let best: { line: MoneyLine; score: number; index: number } | null = null;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
     const score = payableKeywordScore(normalized(line.label));
-    if (score < 0) return current;
 
-    if (!current || score > current.score || (score === current.score && index > current.index)) {
-      return { line, score, index };
+    if (score < 0) continue;
+
+    if (!best || score > best.score || (score === best.score && index > best.index)) {
+      best = { line, score, index };
     }
+  }
 
-    return current;
-  }, null);
-
-  return best ? best.line : null;
+  return best?.line ?? null;
 }
 
 function isItemLine(line: MoneyLine) {

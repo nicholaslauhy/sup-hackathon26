@@ -4,7 +4,7 @@ Authentico is a receipt and invoice fraud-triage application for finance and cla
 
 ## Fraud checks
 
-When a receipt is submitted, Authentico runs the following checks and combines the triggered flags into a risk score (green / amber / red). The image-forensics checks (font/spacing and physical alteration) run through an OpenAI vision model on JPEG/PNG uploads; when no `OPENAI_API_KEY` is configured, or for PDF/HEIC files (not yet rasterised/decoded for the vision pass), they are surfaced to the reviewer as **Pending** and do not affect the score. Checks marked **Planned** are on the roadmap (external-verification layers) and are not yet implemented.
+When a receipt is submitted, Authentico runs the following checks and combines the triggered flags into a risk score (green / amber / red). The image-forensics checks (font/spacing and physical alteration) run through an OpenAI vision model on every supported file kind — JPEG/PNG and PDF (sent as a file input so the model reads the rendered pages), and HEIC after a sharp decode. When no `OPENAI_API_KEY` is configured, or the vision call fails, they are surfaced to the reviewer as **Pending** and do not affect the score. Checks marked **Planned** are on the roadmap (external-verification layers) and are not yet implemented.
 
 | Check | Applies to | Severity | Status | What it looks for |
 | --- | --- | --- | --- | --- |
@@ -16,8 +16,8 @@ When a receipt is submitted, Authentico runs the following checks and combines t
 | Modified after creation | PDF | Medium | Active | PDF modification date later than its creation date. |
 | Line-item arithmetic | All files | High | Active | Line items, subtotal, tax and total not adding up. |
 | Suspiciously round amounts | All files | Low | Active | Unusually round figures. |
-| Font & spacing consistency | JPEG / PNG | Medium | Active (AI) | A value-bearing field (amount, date, total) rendered in a font, weight, size or baseline inconsistent with the surrounding print, typical of a digitally edited region. Runs via the OpenAI vision pass; PDF/HEIC stay pending. |
-| Scratches & physical alteration | JPEG / PNG | High | Active (AI) | Visible scratch-outs, correction fluid/tape, erasures, smudges, or overwriting that conceal or replace original values (amount, date, merchant). Runs via the OpenAI vision pass; PDF/HEIC stay pending. |
+| Font & spacing consistency | JPEG / PNG / PDF / HEIC | Medium | Active (AI) | A value-bearing field (amount, date, total) rendered in a font, weight, size or baseline inconsistent with the surrounding print, typical of a digitally edited region. Runs via the OpenAI vision pass; pending only when no key is configured or the call fails. |
+| Scratches & physical alteration | JPEG / PNG / PDF / HEIC | High | Active (AI) | Visible scratch-outs, correction fluid/tape, erasures, smudges, or overwriting that conceal or replace original values (amount, date, merchant). Runs via the OpenAI vision pass; pending only when no key is configured or the call fails. |
 | Authentic reference comparison | Selected claim type | Info | Active | Exact or visually close matches against the private authentic-example folder. No-match results never increase risk while the sample set is small. |
 
 ### Claim-specific checks

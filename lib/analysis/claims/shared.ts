@@ -89,36 +89,6 @@ export function arithmeticFlag(fields: ExtractedFields, id = "arithmetic"): Flag
   };
 }
 
-export function roundAmountFlag(total: number | undefined): Flag {
-  if (!finite(total)) {
-    return {
-      id: "round-numbers",
-      title: "Suspiciously round amounts",
-      severity: "low",
-      status: "pending",
-      explanation: "No reliable total was extracted for the round-amount check.",
-    };
-  }
-  const roundToTen = total >= 50 && Math.abs(total % 10) < MONEY_TOLERANCE;
-  return roundToTen
-    ? {
-        id: "round-numbers",
-        title: "Unusually round total",
-        severity: "low",
-        status: "triggered",
-        explanation: "The total is an exact multiple of ten. This is a weak signal and should only matter alongside stronger evidence.",
-        evidence: { total },
-      }
-    : {
-        id: "round-numbers",
-        title: "Amount pattern looks ordinary",
-        severity: "info",
-        status: "passed",
-        explanation: "The total does not match the intentionally narrow round-amount rule.",
-        evidence: { total },
-      };
-}
-
 export function layoutFlag(concerns: string[] | undefined): Flag {
   if (!concerns) {
     return {

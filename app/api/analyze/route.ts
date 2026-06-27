@@ -4,6 +4,8 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { findProfile } from "@/lib/server/accounts";
 import { RECEIPT_COLUMNS, toReceiptRecord, type ReceiptRow } from "@/lib/server/receipts";
 import { analyzeReceipt, type DuplicateMatch, type FileKind } from "@/lib/analysis/analyze";
+import { claimTypeMismatchMessage } from "@/lib/analysis/claim-type-classifier";
+import { validateSelectedClaimType } from "@/lib/analysis/claim-type-preflight";
 import { contentHash, hammingDistance, perceptualHash } from "@/lib/analysis/hash";
 import type { ReceiptType } from "@/lib/analysis/types";
 
@@ -34,7 +36,7 @@ export async function POST(request: Request) {
   const account = await findProfile(user.id);
   if (!account) return NextResponse.json({ error: "Account profile not found." }, { status: 404 });
   if (account.role !== "member") {
-    return NextResponse.json({ error: "Only members can submit receipts." }, { status: 403 });
+    return NextResponse.json({ error: "Only employees can submit claims." }, { status: 403 });
   }
 
   const form = await request.formData();
@@ -56,13 +58,28 @@ export async function POST(request: Request) {
   }
 
   const bytes = Buffer.from(await file.arrayBuffer());
+
+  const claimTypeDecision = await validateSelectedClaimType({
+    bytes,
+    fileKind,
+    selectedClaimType: claimType,
+  });
+  if (claimTypeDecision.status === "mismatch") {
+    return NextResponse.json({
+      error: claimTypeMismatchMessage(claimType),
+      detectedType: claimTypeDecision.detectedType,
+      confidence: claimTypeDecision.confidence,
+      reasons: claimTypeDecision.reasons,
+    }, { status: 400 });
+  }
+
   const hash = contentHash(bytes);
   const phash = await perceptualHash(bytes, fileKind);
 
   const admin = createAdminClient();
 
   // Duplicate detection: exact content-hash match first, then near-duplicate
-  // by perceptual-hash distance against this member's prior submissions.
+  // by perceptual-hash distance against prior submissions.
   let duplicate: DuplicateMatch | null = null;
   const { data: exactMatch } = await admin
     .from("receipts")
@@ -127,5 +144,13 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Unable to save the analysis result." }, { status: 500 });
   }
 
-  return NextResponse.json({ receipt: toReceiptRecord(inserted as ReceiptRow) }, { status: 201 });
+  const receipt = toReceiptRecord(inserted as ReceiptRow);
+  return NextResponse.json({
+    submission: {
+      id: receipt.id,
+      fileName: receipt.fileName,
+      claimType: receipt.claimType,
+      createdAt: receipt.createdAt,
+    },
+  }, { status: 201 });
 }

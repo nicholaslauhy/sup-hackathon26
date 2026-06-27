@@ -3,9 +3,11 @@
 /* eslint-disable @next/next/no-img-element */
 
 import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Account, PublicAccount, Role, changePassword, createAccount, createFirstAdmin, deleteAccount, getAccounts, getCurrentAccount, hasAnyAccounts, login, logout } from "@/lib/auth";
-import { FinalDecision, ReceiptRecord, analyzeReceipt, deleteReceipt, getReceipts, recordDecision } from "@/lib/receipts";
+import { Account, PublicAccount, changePassword, createAccount, createFirstAdmin, deleteAccount, getAccounts, getCurrentAccount, hasAnyAccounts, login, logout } from "@/lib/auth";
+import { ClaimHistoryRecord, ClaimSubmission, FinalDecision, ReceiptRecord, analyzeReceipt, deleteReceipt, getClaimHistory, getReceipts, recordDecision, setIgnoredFlags } from "@/lib/receipts";
+
 import type { AnalysisResult, Flag, Tier } from "@/lib/analysis/types";
+import { scoreFromFlags, tierFromScore } from "@/lib/analysis/score";
 
 type InputProps = React.InputHTMLAttributes<HTMLInputElement> & { label: string };
 
@@ -21,8 +23,8 @@ function AuthShell({ children }: { children: React.ReactNode }) {
   return <main className="auth-layout">
     <section className="intro-panel">
       <Logo />
-      <div className="intro-copy"><p className="eyebrow light">RECEIPT INTELLIGENCE</p><h1>Your go to receipt fraud-triage tool</h1></div>
-      <p className="footnote">Built for human review. Never automatic rejection.</p>
+      <div className="intro-copy"><p className="eyebrow light">CLAIM INTELLIGENCE</p><h1>Employee claims, ready for HR review</h1></div>
+      <p className="footnote">Built for human review. HR makes the final call.</p>
     </section>
     <section className="form-panel">{children}</section>
   </main>;
@@ -42,14 +44,14 @@ function LoginForm({ onLogin }: { onLogin: (account: Account) => void }) {
   }
 
   return <AuthShell><div className="form-card">
-    <p className="eyebrow">SECURE ACCESS</p><h2>Welcome back</h2><p className="muted">Sign in with your admin or member account.</p>
+    <p className="eyebrow">SECURE ACCESS</p><h2>Welcome back</h2><p className="muted">Sign in with your HR admin or employee account.</p>
     <form onSubmit={submit}>
       <Field label="Email address" type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@company.com" />
       <Field label="Password" type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Enter your password" />
       {error && <p className="message error" role="alert">{error}</p>}
       <button className="primary-button" disabled={busy}>{busy ? "Signing in..." : "Sign in"}</button>
     </form>
-    <p className="help-text">Need an account? Ask your Authentico admin to add you.</p>
+    <p className="help-text">Need an account? Ask HR to add you.</p>
   </div></AuthShell>;
 }
 
@@ -85,7 +87,6 @@ function AddAccount({ onAdded }: { onAdded: () => void }) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [role, setRole] = useState<Role>("member");
   const [message, setMessage] = useState<{ kind: "error" | "success"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -102,15 +103,13 @@ function AddAccount({ onAdded }: { onAdded: () => void }) {
 
     try {
       const invitedEmail = email.trim().toLowerCase();
-      const invitedRole = role;
-      await createAccount({ name, email: invitedEmail, password, role: invitedRole });
+      await createAccount({ name, email: invitedEmail, password, role: "member" });
       setName("");
       setEmail("");
       setPassword("");
-      setRole("member");
       setMessage({
         kind: "success",
-        text: `${invitedRole === "admin" ? "Admin" : "Member"} account created. A password reset email has been sent to ${invitedEmail}.`,
+        text: `Employee account created. A password reset email has been sent to ${invitedEmail}.`,
       });
       onAdded();
     } catch (reason) {
@@ -122,8 +121,7 @@ function AddAccount({ onAdded }: { onAdded: () => void }) {
 
   return <form className="member-form" onSubmit={submit}>
     <Field label="Name" required value={name} onChange={(e) => setName(e.target.value)} placeholder="Full name" />
-    <Field label="Email address" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="user@company.com" />
-    <label className="field"><span>Role</span><select required value={role} onChange={(e) => setRole(e.target.value as Role)}><option value="member">Member</option><option value="admin">Admin</option></select></label>
+    <Field label="Email address" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="employee@company.com" />
     <Field label="Temporary password" type="password" minLength={8} required value={password} onChange={(e) => setPassword(e.target.value)} placeholder="At least 8 characters" />
     {message && <p className={`message ${message.kind}`}>{message.text}</p>}
     <button className="primary-button compact" disabled={busy}>{busy ? "Sending reset email..." : "Send invite"}</button>
@@ -185,9 +183,63 @@ function isArithmeticFlag(flag: Flag | null) {
   return text.includes("arithmetic") || text.includes("subtotal") || text.includes("total");
 }
 
-function displayFlagTitle(flag: Flag) {
-  return flag.title;
+// Canonical names from the README "Fraud checks" table, keyed by flag id. The
+// analysis layer varies each flag's `title` by outcome (and the VLM adds
+// claim-specific flags); the UI must show only these checks, each under its one
+// fixed table name regardless of pass/fail/pending status.
+const CANONICAL_FLAG_TITLES: Record<string, string> = {
+  "is-receipt": "Submitted file is a receipt",
+  duplicate: "Duplicate / near-duplicate submission",
+  "exif-editor": "Edited in image software",
+  "exif-camera": "Camera metadata present",
+  "pdf-producer": "Created with image/design software",
+  "pdf-modified": "Modified after creation",
+  arithmetic: "Line-item arithmetic",
+  "font-consistency": "Font & spacing consistency",
+  "physical-alteration": "Scratches & physical alteration",
+};
+
+// The authentic-reference flag id is claim-scoped (e.g. "medical-reference").
+function canonicalFlagTitle(flag: Flag): string | null {
+  if (flag.id in CANONICAL_FLAG_TITLES) return CANONICAL_FLAG_TITLES[flag.id];
+  if (flag.id.endsWith("-reference")) return "Authentic reference comparison";
+  return null;
 }
+
+// A flag is shown only when it maps to a row in the Fraud checks table. This
+// hides the claim-specific checks the VLM adds (identifiers, timing, location,
+// tax, service-kind, claim-specific arithmetic).
+function isCanonicalFlag(flag: Flag): boolean {
+  return canonicalFlagTitle(flag) !== null;
+}
+
+// Canonical, table-aligned flags in display order, ready to render.
+function visibleFlags(flags: Flag[]): Flag[] {
+  return flags
+    .filter(isCanonicalFlag)
+    .sort((a, b) => statusOrder[a.status] - statusOrder[b.status]);
+}
+
+function displayFlagTitle(flag: Flag) {
+  return canonicalFlagTitle(flag) ?? flag.title;
+}
+
+type FlagSource = "ai" | "tool";
+
+// Where a flag came from, so HR can tell an AI judgement apart from a
+// deterministic tool result. The image-forensics checks are raised by the VLM
+// (see lib/analysis/checks/forensics.ts); everything else is a metadata, hash,
+// OCR or arithmetic tool that runs without a model.
+const AI_FLAG_IDS = new Set(["font-consistency", "physical-alteration"]);
+
+function flagSource(flag: Flag): FlagSource {
+  return AI_FLAG_IDS.has(flag.id) ? "ai" : "tool";
+}
+
+const flagSourceMeta: Record<FlagSource, { label: string; hint: string }> = {
+  ai: { label: "AI vision", hint: "Raised by the AI image-forensics model" },
+  tool: { label: "Automated tool", hint: "Raised by a deterministic metadata, hash, OCR or arithmetic check" },
+};
 
 function parseMoneyAmount(value: unknown) {
   if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -268,7 +320,6 @@ function flagLocation(flag: Flag) {
   if (flag.id === "duplicate") return "Whole uploaded file";
   if (isArithmeticFlag(flag)) return "Receipt amount lines";
   if (flag.id === "font-consistency") return "Text blocks and spacing";
-  if (flag.id === "round-numbers") return "Amount fields";
   return "Receipt evidence";
 }
 
@@ -321,14 +372,25 @@ function ScoreMeter({ score, tier }: { score: number; tier: Tier }) {
   </div>;
 }
 
-function FlagItem({ flag, selected = false, onSelect }: { flag: Flag; selected?: boolean; onSelect?: () => void }) {
+function FlagItem({ flag, selected = false, onSelect, ignored = false, ignoreBusy = false, onToggleIgnore }: {
+  flag: Flag;
+  selected?: boolean;
+  onSelect?: () => void;
+  ignored?: boolean;
+  ignoreBusy?: boolean;
+  onToggleIgnore?: () => void;
+}) {
   const evidence = evidenceEntries(flag);
   const regionCount = flagRegions(flag).length;
+  const source = flagSource(flag);
+  const sourceMeta = flagSourceMeta[source];
 
-  return <li className={`flag-item ${flag.status} ${selected ? "selected" : ""}`}>
+  return <li className={`flag-item ${flag.status} ${selected ? "selected" : ""} ${ignored ? "ignored" : ""}`}>
     <button type="button" className="flag-select-button" onClick={onSelect} disabled={!onSelect}>
       <span className="flag-head">
         <span className={`flag-status ${flag.status}`}>{statusLabel[flag.status]}</span>
+        <span className={`flag-source ${source}`} title={sourceMeta.hint}>{sourceMeta.label}</span>
+        {ignored && <span className="flag-ignored-tag">Ignored — false positive</span>}
         <strong>{displayFlagTitle(flag)}</strong>
         <span className={`flag-severity ${flag.severity}`}>{flag.severity}</span>
       </span>
@@ -341,6 +403,14 @@ function FlagItem({ flag, selected = false, onSelect }: { flag: Flag; selected?:
       {regionCount > 0 && <span className="flag-view-hint">View on receipt</span>}
     </button>
     {isArithmeticFlag(flag) ? <ArithmeticEvidenceDetails flag={flag} /> : evidence.length > 0 && <dl className="flag-evidence">{evidence.map(([key, value]) => <div key={key}><dt>{formatEvidenceKey(key)}</dt><dd>{evidenceValue(value)}</dd></div>)}</dl>}
+    {onToggleIgnore && <div className="flag-ignore-row">
+      <span className="flag-ignore-hint">{ignored
+        ? "Restored flags count toward the claim's risk again."
+        : `This concern was raised by ${source === "ai" ? "the AI" : "an automated tool"}. Ignore it if it's a false positive.`}</span>
+      <button type="button" className={ignored ? "text-button dark" : "ghost-button"} disabled={ignoreBusy} onClick={onToggleIgnore}>
+        {ignoreBusy ? "Saving..." : ignored ? "Restore flag" : "Ignore flag"}
+      </button>
+    </div>}
   </li>;
 }
 
@@ -348,7 +418,7 @@ function ResultSummary({ receipt, onDecision, onReset }: { receipt: ReceiptRecor
   const [busy, setBusy] = useState<"authentic" | "rejected" | null>(null);
   const [error, setError] = useState("");
   const result: AnalysisResult = receipt.result;
-  const flags = [...result.flags].sort((a, b) => statusOrder[a.status] - statusOrder[b.status]);
+  const flags = visibleFlags(result.flags);
   const meta = tierMeta[result.tier];
 
   async function decide(decision: "authentic" | "rejected") {
@@ -375,7 +445,7 @@ function ResultSummary({ receipt, onDecision, onReset }: { receipt: ReceiptRecor
       {error && <p className="message error" role="alert">{error}</p>}
     </div>
 
-    <button className="text-button dark" onClick={onReset}>Check another receipt</button>
+    <button className="text-button dark" onClick={onReset}>Submit another claim</button>
   </section>;
 }
 
@@ -385,7 +455,7 @@ function ReceiptUpload({ onAnalyzed }: { onAnalyzed?: () => void }) {
   const [file, setFile] = useState<File | null>(null);
   const [error, setError] = useState("");
   const [phase, setPhase] = useState<"form" | "analyzing">("form");
-  const [receipt, setReceipt] = useState<ReceiptRecord | null>(null);
+  const [submission, setSubmission] = useState<ClaimSubmission | null>(null);
 
   function selectType(type: ReceiptType) {
     setReceiptType(type);
@@ -428,7 +498,7 @@ function ReceiptUpload({ onAnalyzed }: { onAnalyzed?: () => void }) {
   }
 
   function reset() {
-    setReceipt(null);
+    setSubmission(null);
     setReceiptType(null);
     setFile(null);
     setError("");
@@ -443,21 +513,25 @@ function ReceiptUpload({ onAnalyzed }: { onAnalyzed?: () => void }) {
     setError("");
     setPhase("analyzing");
     try {
-      setReceipt(await analyzeReceipt(file, receiptType));
+      setSubmission(await analyzeReceipt(file, receiptType));
       onAnalyzed?.();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Unable to analyze the receipt.");
+      setError(reason instanceof Error ? reason.message : "Unable to submit the claim.");
       setPhase("form");
     }
   }
 
-  async function decide(decision: "authentic" | "rejected") {
-    if (!receipt) return;
-    setReceipt(await recordDecision(receipt.id, decision));
-    onAnalyzed?.();
-  }
-
-  if (receipt) return <ResultSummary receipt={receipt} onDecision={decide} onReset={reset} />;
+  if (submission) return <section className="receipt-workflow submission-success">
+    <div className="success-mark">✓</div>
+    <p className="eyebrow">CLAIM SUBMITTED</p>
+    <h2>Thank you! HR will process your claim before rolling out the reimbursement.</h2>
+    <div className="submission-details">
+      <div><span>Receipt</span><strong>{submission.fileName}</strong></div>
+      <div><span>Claim type</span><strong>{claimLabels[submission.claimType]}</strong></div>
+      <div><span>Submitted</span><strong>{formatDateTime(submission.createdAt)}</strong></div>
+    </div>
+    <button className="primary-button compact" onClick={reset}>Submit another claim</button>
+  </section>;
 
   const selectedType = receiptTypes.find((type) => type.id === receiptType);
   const selectedFileKind = file ? fileKind(file) : null;
@@ -465,13 +539,13 @@ function ReceiptUpload({ onAnalyzed }: { onAnalyzed?: () => void }) {
 
   return <section className="receipt-workflow">
     <div className="workflow-heading">
-      <div><p className="eyebrow">NEW RECEIPT CHECK</p><h2>What kind of receipt are you checking?</h2><p>Select the claim category, then attach one receipt file.</p></div>
+      <div><p className="eyebrow">NEW REIMBURSEMENT CLAIM</p><h2>Submit your receipt to HR</h2><p>Select the claim category, then attach one receipt file for HR review.</p></div>
       <span className="step-count">2 steps</span>
     </div>
 
     <form onSubmit={submit}>
       <fieldset className="receipt-type-fieldset" disabled={analyzing}>
-        <legend><span>01</span> Choose a receipt type</legend>
+        <legend><span>01</span> Choose a claim type</legend>
         <div className="receipt-type-grid">
           {receiptTypes.map((type) => <label className={`receipt-type-card ${receiptType === type.id ? "selected" : ""}`} key={type.id}>
             <input type="radio" name="receipt-type" value={type.id} checked={receiptType === type.id} onChange={() => selectType(type.id)} />
@@ -498,7 +572,7 @@ function ReceiptUpload({ onAnalyzed }: { onAnalyzed?: () => void }) {
       </fieldset>
 
       {error && <p className="message error receipt-message" role="alert">{error}</p>}
-      <button className="primary-button receipt-submit" disabled={!receiptType || !file || analyzing}>{analyzing ? "Analyzing..." : "Analyze receipt"}</button>
+      <button className="primary-button receipt-submit" disabled={!receiptType || !file || analyzing}>{analyzing ? "Submitting..." : "Submit claim"}</button>
     </form>
   </section>;
 }
@@ -1230,55 +1304,53 @@ function uniqueClientLines(lines: ClientOcrLine[]) {
 function tesseractLinesToClientLines(lines: unknown[], imageWidth: number, imageHeight: number): ClientOcrLine[] {
   if (!Array.isArray(lines) || imageWidth <= 0 || imageHeight <= 0) return [];
 
-  const parsed: ClientOcrLine[] = [];
+  return lines
+    .map((line): ClientOcrLine | null => {
+      if (!isRecord(line)) return null;
 
-  for (const line of lines) {
-    if (!isRecord(line)) continue;
+      const text = String(line.text ?? "").trim();
+      if (!text) return null;
 
-    const text = String(line.text ?? "").trim();
-    if (!text) continue;
+      const bbox = isRecord(line.bbox) ? line.bbox : line;
+      const x0 = readNumber(bbox.x0 ?? bbox.left ?? bbox.x);
+      const y0 = readNumber(bbox.y0 ?? bbox.top ?? bbox.y);
+      const x1 = readNumber(bbox.x1 ?? bbox.right);
+      const y1 = readNumber(bbox.y1 ?? bbox.bottom);
+      const width = readNumber(bbox.width ?? bbox.w);
+      const height = readNumber(bbox.height ?? bbox.h);
 
-    const bbox = isRecord(line.bbox) ? line.bbox : line;
-    const x0 = readNumber(bbox.x0 ?? bbox.left ?? bbox.x);
-    const y0 = readNumber(bbox.y0 ?? bbox.top ?? bbox.y);
-    const x1 = readNumber(bbox.x1 ?? bbox.right);
-    const y1 = readNumber(bbox.y1 ?? bbox.bottom);
-    const width = readNumber(bbox.width ?? bbox.w);
-    const height = readNumber(bbox.height ?? bbox.h);
+      if (x0 === null || y0 === null) return null;
 
-    if (x0 === null || y0 === null) continue;
+      const right = x1 ?? (width !== null ? x0 + width : null);
+      const bottom = y1 ?? (height !== null ? y0 + height : null);
+      if (right === null || bottom === null) return null;
 
-    const right = x1 ?? (width !== null ? x0 + width : null);
-    const bottom = y1 ?? (height !== null ? y0 + height : null);
-    if (right === null || bottom === null) continue;
+      const normalizedLine: ClientOcrLine = {
+        text,
+        x: x0 / imageWidth,
+        y: y0 / imageHeight,
+        width: (right - x0) / imageWidth,
+        height: (bottom - y0) / imageHeight,
+        shape: "box",
+        confidence: readNumber(line.confidence) ?? undefined,
+      };
 
-    const normalizedLine: ClientOcrLine = {
-      text,
-      x: x0 / imageWidth,
-      y: y0 / imageHeight,
-      width: (right - x0) / imageWidth,
-      height: (bottom - y0) / imageHeight,
-      shape: "box",
-      confidence: readNumber(line.confidence) ?? undefined,
-    };
+      if (
+        normalizedLine.x < 0 ||
+        normalizedLine.y < 0 ||
+        normalizedLine.width <= 0 ||
+        normalizedLine.height <= 0 ||
+        normalizedLine.x > 1 ||
+        normalizedLine.y > 1 ||
+        normalizedLine.width > 1 ||
+        normalizedLine.height > 1
+      ) {
+        return null;
+      }
 
-    if (
-      normalizedLine.x < 0 ||
-      normalizedLine.y < 0 ||
-      normalizedLine.width <= 0 ||
-      normalizedLine.height <= 0 ||
-      normalizedLine.x > 1 ||
-      normalizedLine.y > 1 ||
-      normalizedLine.width > 1 ||
-      normalizedLine.height > 1
-    ) {
-      continue;
-    }
-
-    parsed.push(normalizedLine);
-  }
-
-  return parsed;
+      return normalizedLine;
+    })
+    .filter((line): line is ClientOcrLine => line !== null);
 }
 
 function wordsToClientLines(words: unknown[], imageWidth: number, imageHeight: number): ClientOcrLine[] {
@@ -1927,11 +1999,23 @@ function ReceiptDetailModal({ receipt, canEdit, onClose, onChange, onDeleted }: 
   onDeleted: (id: string) => void;
 }) {
   const [busy, setBusy] = useState<"authentic" | "rejected" | "delete" | null>(null);
+  const [ignoreBusyId, setIgnoreBusyId] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [error, setError] = useState("");
   const result: AnalysisResult = receipt.result;
-  const flags = [...result.flags].sort((a, b) => statusOrder[a.status] - statusOrder[b.status]);
-  const meta = tierMeta[result.tier];
+  const flags = visibleFlags(result.flags);
+  const ignoredFlags = receipt.ignoredFlags ?? [];
+  const ignoredSet = new Set(ignoredFlags);
+  const activeTriggered = flags.filter((flag) => flag.status === "triggered" && !ignoredSet.has(flag.id)).length;
+  const ignoredCount = flags.filter((flag) => flag.status === "triggered" && ignoredSet.has(flag.id)).length;
+  // HR-adjusted risk: re-score over the full flag set minus the ones HR ignored.
+  // The stored result.score/tier (the original AI assessment) is left untouched
+  // as an audit record; this only changes what the modal shows. With nothing
+  // ignored, this equals the stored score.
+  const adjustedScore = scoreFromFlags(result.flags.filter((flag) => !ignoredSet.has(flag.id)));
+  const adjustedTier = tierFromScore(adjustedScore);
+  const scoreAdjusted = ignoredCount > 0 && adjustedScore !== result.score;
+  const meta = tierMeta[adjustedTier];
   const [selectedFlagId, setSelectedFlagId] = useState<string | null>(() => flags.find(hasVisualEvidence)?.id ?? flags[0]?.id ?? null);
   const selectedFlag = flags.find((flag) => flag.id === selectedFlagId) ?? flags[0] ?? null;
   const [manualRegions, setManualRegions] = useState<Record<string, EvidenceRegion>>({});
@@ -1975,14 +2059,28 @@ function ReceiptDetailModal({ receipt, canEdit, onClose, onChange, onDeleted }: 
     catch (reason) { setError(reason instanceof Error ? reason.message : "Unable to delete the receipt."); setBusy(null); }
   }
 
+  async function toggleIgnore(flagId: string) {
+    setIgnoreBusyId(flagId); setError("");
+    const next = ignoredSet.has(flagId)
+      ? ignoredFlags.filter((id) => id !== flagId)
+      : [...ignoredFlags, flagId];
+    try { onChange(await setIgnoredFlags(receipt.id, next)); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "Unable to update the flag."); }
+    finally { setIgnoreBusyId(null); }
+  }
+
   return <div className="modal-overlay" role="dialog" aria-modal="true" onClick={onClose}>
     <div className="modal-card" onClick={(event) => event.stopPropagation()}>
       <button className="modal-close" aria-label="Close" onClick={onClose}>×</button>
 
-      <div className={`result-banner ${result.tier}`}>
+      <div className={`result-banner ${adjustedTier}`}>
         <div><span className="result-tier-pill">{meta.label}</span><h2>{receipt.fileName}</h2><p>{result.summary}</p></div>
-        <ScoreMeter score={result.score} tier={result.tier} />
+        <ScoreMeter score={adjustedScore} tier={adjustedTier} />
       </div>
+
+      {scoreAdjusted && <p className="score-adjusted-note">
+        HR-adjusted risk after ignoring {ignoredCount} flag{ignoredCount === 1 ? "" : "s"}. Original AI assessment: <strong>{result.score}/100 · {tierMeta[result.tier].label}</strong> (kept on record).
+      </p>}
 
       <div className="receipt-timeframe">
         <div><span>Checked on</span><strong>{formatDateTime(receipt.createdAt)}</strong></div>
@@ -1995,7 +2093,21 @@ function ReceiptDetailModal({ receipt, canEdit, onClose, onChange, onDeleted }: 
         manualRegions={manualRegions}
         onManualRegionChange={updateManualRegion}
       />
-      <ul className="flag-list">{flags.map((flag) => <FlagItem key={flag.id} flag={flag} selected={flag.id === selectedFlag?.id} onSelect={() => setSelectedFlagId(flag.id)} />)}</ul>
+      {canEdit && <div className="flag-legend">
+        <span><em className="flag-source-dot ai" />AI vision</span>
+        <span><em className="flag-source-dot tool" />Automated tool</span>
+        {ignoredCount > 0 && <span className="flag-legend-ignored">{ignoredCount} flag{ignoredCount === 1 ? "" : "s"} ignored as false positive{ignoredCount === 1 ? "" : "s"} · {activeTriggered} active concern{activeTriggered === 1 ? "" : "s"} left</span>}
+      </div>}
+      <ul className="flag-list">{flags.map((flag) => <FlagItem
+        key={flag.id}
+        flag={flag}
+        selected={flag.id === selectedFlag?.id}
+        onSelect={() => setSelectedFlagId(flag.id)}
+        ignored={ignoredSet.has(flag.id)}
+        ignoreBusy={ignoreBusyId === flag.id}
+        onToggleIgnore={canEdit && flag.status === "triggered" ? () => toggleIgnore(flag.id) : undefined}
+      />)}</ul>
+
 
       {canEdit ? <div className="modal-decision">
         <div className="modal-decision-head">
@@ -2008,7 +2120,7 @@ function ReceiptDetailModal({ receipt, canEdit, onClose, onChange, onDeleted }: 
           <button className="danger-button" disabled={busy !== null || receipt.finalDecision === "rejected"} onClick={() => decide("rejected")}>{busy === "rejected" ? "Saving..." : "Reject"}</button>
         </div>
       </div> : <div className="final-check">
-        <div><p className="eyebrow">DECISION</p><p className="muted final-check-copy">Recorded by the member who submitted this receipt.</p></div>
+        <div><p className="eyebrow">DECISION</p><p className="muted final-check-copy">Recorded by HR after reviewing this claim.</p></div>
         <span className={`decision-pill ${receipt.finalDecision}`}>{decisionLabels[receipt.finalDecision]}</span>
       </div>}
 
@@ -2070,6 +2182,46 @@ function ReceiptHistory({ showMember, canEdit = false, refreshKey = 0, eyebrow, 
   </section>;
 }
 
+function MemberClaimHistory({ refreshKey = 0 }: { refreshKey?: number }) {
+  const [claims, setClaims] = useState<ClaimHistoryRecord[] | null>(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    setClaims(null);
+    setError("");
+    void (async () => {
+      try {
+        const data = await getClaimHistory();
+        if (active) setClaims(data);
+      } catch (reason) {
+        if (active) setError(reason instanceof Error ? reason.message : "Unable to load your claim history.");
+      }
+    })();
+    return () => { active = false; };
+  }, [refreshKey]);
+
+  return <section className="surface wide">
+    <div className="history-head">
+      <div><p className="eyebrow">YOUR CLAIMS</p><h2>Claim history</h2></div>
+      {claims && <span className="step-count">{claims.length} total</span>}
+    </div>
+    {error ? <p className="message error" role="alert">{error}</p>
+      : !claims ? <p className="muted">Loading...</p>
+      : claims.length === 0 ? <div className="empty-state"><span>00</span><p>You have not submitted any claims yet.</p></div>
+      : <div className="history-table member-claim-table">
+          <div className="history-row history-header"><span>Receipt</span><span>Type</span><span>Status</span><span>Submitted</span><span>Reviewed</span></div>
+          {claims.map((claim) => <div className="history-row history-row-static" key={claim.id}>
+            <span className="history-member">{claim.fileName}</span>
+            <span>{claimLabels[claim.claimType] ?? claim.claimType}</span>
+            <span className={`decision-pill ${claim.finalDecision}`}>{decisionLabels[claim.finalDecision]}</span>
+            <span className="history-date"><span>Submitted</span>{formatDateTime(claim.createdAt)}</span>
+            <span className="history-date"><span>Reviewed</span>{claim.reviewedAt && claim.finalDecision !== "pending" ? formatDateTime(claim.reviewedAt) : "Pending HR review"}</span>
+          </div>)}
+        </div>}
+  </section>;
+}
+
 function getLast12Months(): { key: string; label: string }[] {
   const months: { key: string; label: string }[] = [];
   const now = new Date();
@@ -2088,9 +2240,28 @@ type UserClaimsSummary = {
   email: string;
   total: number;
   avgScore: number;
+  pendingCount: number;
+  rejectedCount: number;
   tierCounts: Record<Tier, number>;
+  claimTypeCounts: Record<ReceiptType, number>;
   monthlyCounts: number[];
+  monthlyTierCounts: Record<Tier, number>[];
 };
+
+function emptyClaimsSummary(name: string, email: string, months: { key: string }[]): UserClaimsSummary {
+  return {
+    name,
+    email,
+    total: 0,
+    avgScore: 0,
+    pendingCount: 0,
+    rejectedCount: 0,
+    tierCounts: { green: 0, amber: 0, red: 0 },
+    claimTypeCounts: { medical: 0, purchase: 0, grab: 0 },
+    monthlyCounts: months.map(() => 0),
+    monthlyTierCounts: months.map(() => ({ green: 0, amber: 0, red: 0 })),
+  };
+}
 
 function buildUserClaimsSummaries(receipts: ReceiptRecord[], accounts: PublicAccount[], months: { key: string }[]): UserClaimsSummary[] {
   const cutoff = new Date();
@@ -2099,7 +2270,7 @@ function buildUserClaimsSummaries(receipts: ReceiptRecord[], accounts: PublicAcc
 
   const byUser = new Map<string, UserClaimsSummary>();
   for (const account of accounts) {
-    byUser.set(account.email, { name: account.name, email: account.email, total: 0, avgScore: 0, tierCounts: { green: 0, amber: 0, red: 0 }, monthlyCounts: months.map(() => 0) });
+    byUser.set(account.email, emptyClaimsSummary(account.name, account.email, months));
   }
   for (const r of receipts) {
     const created = new Date(r.createdAt);
@@ -2107,20 +2278,46 @@ function buildUserClaimsSummaries(receipts: ReceiptRecord[], accounts: PublicAcc
     const email = r.uploader?.email ?? "unknown";
     const name = r.uploader?.name ?? "Unknown";
     if (!byUser.has(email)) {
-      byUser.set(email, { name, email, total: 0, avgScore: 0, tierCounts: { green: 0, amber: 0, red: 0 }, monthlyCounts: months.map(() => 0) });
+      byUser.set(email, emptyClaimsSummary(name, email, months));
     }
     const summary = byUser.get(email)!;
     const monthKey = `${created.getFullYear()}-${String(created.getMonth() + 1).padStart(2, "0")}`;
     const monthIndex = months.findIndex((m) => m.key === monthKey);
-    if (monthIndex >= 0) summary.monthlyCounts[monthIndex] += 1;
+    if (monthIndex >= 0) {
+      summary.monthlyCounts[monthIndex] += 1;
+      summary.monthlyTierCounts[monthIndex][r.tier] += 1;
+    }
     summary.total += 1;
     summary.tierCounts[r.tier] += 1;
+    summary.claimTypeCounts[r.claimType] += 1;
     summary.avgScore += r.score;
+    if (r.finalDecision === "pending") summary.pendingCount += 1;
+    if (r.finalDecision === "rejected") summary.rejectedCount += 1;
   }
 
   return Array.from(byUser.values())
     .sort((a, b) => b.total - a.total || a.name.localeCompare(b.name))
     .map((summary) => ({ ...summary, avgScore: summary.total ? Math.round(summary.avgScore / summary.total) : 0 }));
+}
+
+const claimsSortOptions = [
+  { id: "total", label: "Most claims" },
+  { id: "avgScore", label: "Highest avg score" },
+  { id: "pending", label: "Most pending" },
+  { id: "rejected", label: "Most rejected" },
+  { id: "name", label: "Name (A-Z)" },
+] as const;
+type ClaimsSortId = typeof claimsSortOptions[number]["id"];
+
+function sortClaimsSummaries(summaries: UserClaimsSummary[], sortBy: ClaimsSortId): UserClaimsSummary[] {
+  const sorted = [...summaries];
+  switch (sortBy) {
+    case "avgScore": return sorted.sort((a, b) => b.avgScore - a.avgScore || a.name.localeCompare(b.name));
+    case "pending": return sorted.sort((a, b) => b.pendingCount - a.pendingCount || a.name.localeCompare(b.name));
+    case "rejected": return sorted.sort((a, b) => b.rejectedCount - a.rejectedCount || a.name.localeCompare(b.name));
+    case "name": return sorted.sort((a, b) => a.name.localeCompare(b.name));
+    default: return sorted.sort((a, b) => b.total - a.total || a.name.localeCompare(b.name));
+  }
 }
 
 function monthKeyOf(dateValue: string) {
@@ -2170,6 +2367,7 @@ function MemberReceiptsModal({ name, email, receipts, onClose, onChange, onDelet
 }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [tab, setTab] = useState<"recent" | "history">("recent");
+  const [openGroup, setOpenGroup] = useState<string | null>(null);
   const selected = receipts.find((r) => r.id === selectedId) ?? null;
 
   useEffect(() => {
@@ -2183,6 +2381,11 @@ function MemberReceiptsModal({ name, email, receipts, onClose, onChange, onDelet
   const earlier = useMemo(() => receipts.filter((r) => new Date(r.createdAt) < cutoff), [receipts, cutoff]);
   const monthGroups = useMemo(() => groupReceiptsByKey(recent, (r) => monthKeyOf(r.createdAt)), [recent]);
   const yearGroups = useMemo(() => groupReceiptsByKey(earlier, (r) => String(new Date(r.createdAt).getFullYear())), [earlier]);
+  const activeGroups = tab === "recent" ? monthGroups : yearGroups;
+
+  useEffect(() => {
+    setOpenGroup(activeGroups.length === 1 ? activeGroups[0].key : null);
+  }, [tab, activeGroups]);
 
   return <div className="modal-overlay" role="dialog" aria-modal="true" onClick={onClose}>
     <div className="modal-card" onClick={(event) => event.stopPropagation()}>
@@ -2198,14 +2401,20 @@ function MemberReceiptsModal({ name, email, receipts, onClose, onChange, onDelet
         ? (monthGroups.length === 0
           ? <div className="empty-state"><span>00</span><p>No claims in the past 12 months.</p></div>
           : monthGroups.map((group) => <div className="claims-month-group" key={group.key}>
-              <h3 className="claims-month-heading">{monthLabelOf(group.key)} <span className="step-count">{group.receipts.length}</span></h3>
-              <ReceiptGroupTable receipts={group.receipts} onReview={setSelectedId} />
+              <button type="button" className="claims-month-box" onClick={() => setOpenGroup(openGroup === group.key ? null : group.key)}>
+                <span className="claims-month-heading">{monthLabelOf(group.key)}</span>
+                <span className="step-count">{group.receipts.length} claim{group.receipts.length === 1 ? "" : "s"}</span>
+              </button>
+              {openGroup === group.key && <ReceiptGroupTable receipts={group.receipts} onReview={setSelectedId} />}
             </div>))
         : (yearGroups.length === 0
           ? <div className="empty-state"><span>00</span><p>No claims from earlier years.</p></div>
           : yearGroups.map((group) => <div className="claims-month-group" key={group.key}>
-              <h3 className="claims-month-heading">{group.key} <span className="step-count">{group.receipts.length}</span></h3>
-              <ReceiptGroupTable receipts={group.receipts} onReview={setSelectedId} />
+              <button type="button" className="claims-month-box" onClick={() => setOpenGroup(openGroup === group.key ? null : group.key)}>
+                <span className="claims-month-heading">{group.key}</span>
+                <span className="step-count">{group.receipts.length} claim{group.receipts.length === 1 ? "" : "s"}</span>
+              </button>
+              {openGroup === group.key && <ReceiptGroupTable receipts={group.receipts} onReview={setSelectedId} />}
             </div>))}
     </div>
     {selected && <ReceiptDetailModal
@@ -2218,11 +2427,50 @@ function MemberReceiptsModal({ name, email, receipts, onClose, onChange, onDelet
   </div>;
 }
 
+const CLAIMS_DASHBOARD_VIEW_KEY = "claims-dashboard-view";
+
+function loadStoredDashboardView(): { search: string; sortBy: ClaimsSortId } {
+  if (typeof window === "undefined") return { search: "", sortBy: "total" };
+  try {
+    const raw = window.localStorage.getItem(CLAIMS_DASHBOARD_VIEW_KEY);
+    if (!raw) return { search: "", sortBy: "total" };
+    const parsed = JSON.parse(raw);
+    const sortBy = claimsSortOptions.some((option) => option.id === parsed.sortBy) ? parsed.sortBy : "total";
+    return { search: typeof parsed.search === "string" ? parsed.search : "", sortBy };
+  } catch {
+    return { search: "", sortBy: "total" };
+  }
+}
+
+function downloadClaimsCsv(summaries: UserClaimsSummary[], months: { key: string; label: string }[]) {
+  const header = ["Name", "Email", "Total claims", "Avg score", "Pending", "Rejected", "Low risk", "Some risk", "High risk", ...months.map((m) => m.label)];
+  const rows = summaries.map((s) => [
+    s.name, s.email, s.total, s.avgScore, s.pendingCount, s.rejectedCount,
+    s.tierCounts.green, s.tierCounts.amber, s.tierCounts.red, ...s.monthlyCounts,
+  ]);
+  const csv = [header, ...rows]
+    .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","))
+    .join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `claim-activity-${new Date().toISOString().slice(0, 10)}.csv`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 function UserClaimsDashboard({ accounts }: { accounts: PublicAccount[] }) {
   const [receipts, setReceipts] = useState<ReceiptRecord[] | null>(null);
   const [error, setError] = useState("");
-  const [search, setSearch] = useState("");
+  const [initialView] = useState(loadStoredDashboardView);
+  const [search, setSearch] = useState(initialView.search);
+  const [sortBy, setSortBy] = useState<ClaimsSortId>(initialView.sortBy);
   const [selectedMember, setSelectedMember] = useState<{ name: string; email: string } | null>(null);
+
+  useEffect(() => {
+    window.localStorage.setItem(CLAIMS_DASHBOARD_VIEW_KEY, JSON.stringify({ search, sortBy }));
+  }, [search, sortBy]);
 
   useEffect(() => {
     let active = true;
@@ -2240,22 +2488,36 @@ function UserClaimsDashboard({ accounts }: { accounts: PublicAccount[] }) {
   const visibleSummaries = query
     ? summaries.filter((s) => s.name.toLowerCase().includes(query) || s.email.toLowerCase().includes(query))
     : summaries;
-  const activeSummaries = visibleSummaries.filter((s) => s.total > 0);
+  const activeSummaries = sortClaimsSummaries(visibleSummaries.filter((s) => s.total > 0), sortBy);
   const emptySummaries = visibleSummaries.filter((s) => s.total === 0);
+  const currentMonth = months[months.length - 1];
+  const currentMonthTotal = summaries.reduce((sum, s) => sum + s.monthlyCounts[s.monthlyCounts.length - 1], 0);
 
   return <section className="surface wide">
     <div className="history-head">
       <div><p className="eyebrow">CLAIM ACTIVITY</p><h2>Past 12 months by member</h2></div>
-      {receipts && <span className="step-count">{visibleSummaries.length} of {summaries.length} member{summaries.length === 1 ? "" : "s"}</span>}
+      {receipts && <div className="history-head-stats">
+        <span className="step-count">{visibleSummaries.length} of {summaries.length} member{summaries.length === 1 ? "" : "s"}</span>
+        {summaries.length > 0 && <span className="step-count claims-month-chip">{currentMonth.label} claims: {currentMonthTotal}</span>}
+      </div>}
     </div>
-    {receipts && summaries.length > 0 && <input
-      type="search"
-      className="claims-search"
-      placeholder="Search by name or email"
-      value={search}
-      onChange={(e) => setSearch(e.target.value)}
-      aria-label="Search members by name or email"
-    />}
+    {receipts && summaries.length > 0 && <div className="claims-controls">
+      <div className="claims-search-wrap">
+        <input
+          type="search"
+          className="claims-search"
+          placeholder="Search by name or email"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          aria-label="Search members by name or email"
+        />
+        {search && <button type="button" className="claims-search-clear" aria-label="Clear search" onClick={() => setSearch("")}>×</button>}
+      </div>
+      <select className="claims-sort" value={sortBy} onChange={(e) => setSortBy(e.target.value as ClaimsSortId)} aria-label="Sort members by">
+        {claimsSortOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+      </select>
+      <button type="button" className="text-button dark claims-export" onClick={() => downloadClaimsCsv(visibleSummaries, months)}>Export CSV</button>
+    </div>}
     {error ? <p className="message error" role="alert">{error}</p>
       : !receipts ? <p className="muted">Loading...</p>
       : summaries.length === 0 ? <div className="empty-state"><span>00</span><p>No members yet.</p></div>
@@ -2273,6 +2535,7 @@ function UserClaimsDashboard({ accounts }: { accounts: PublicAccount[] }) {
                 <div className="claims-card-stats">
                   <span className="step-count">{s.total} claim{s.total === 1 ? "" : "s"}</span>
                   <span className="step-count">Avg score {s.avgScore}</span>
+                  {s.pendingCount > 0 && <span className="step-count claims-pending-chip">{s.pendingCount} pending</span>}
                 </div>
               </div>
               <div className="claims-tier-row">
@@ -2280,11 +2543,23 @@ function UserClaimsDashboard({ accounts }: { accounts: PublicAccount[] }) {
                 <span><em className="tier-dot amber" />{s.tierCounts.amber} some</span>
                 <span><em className="tier-dot red" />{s.tierCounts.red} high</span>
               </div>
+              <div className="claims-type-row">
+                {receiptTypes.map((type) => s.claimTypeCounts[type.id] > 0 && <span key={type.id}>{type.abbreviation} {s.claimTypeCounts[type.id]}</span>)}
+              </div>
               <div className="claims-bar-chart">
-                {s.monthlyCounts.map((count, i) => <div className="claims-bar-col" key={months[i].key}>
-                  <div className="claims-bar" style={{ height: count ? `${Math.max(6, (count / maxMonthly) * 64)}px` : "2px" }} title={`${months[i].label}: ${count}`} />
-                  <span className="claims-bar-label">{months[i].label}</span>
-                </div>)}
+                {s.monthlyTierCounts.map((tiers, i) => {
+                  const count = s.monthlyCounts[i];
+                  return <div className="claims-bar-col" key={months[i].key}>
+                    <div className="claims-bar" style={{ height: count ? `${Math.max(6, (count / maxMonthly) * 64)}px` : "2px" }} title={`${months[i].label}: ${count} (${tiers.green} low, ${tiers.amber} some, ${tiers.red} high)`}>
+                      {count > 0 && (["red", "amber", "green"] as Tier[]).map((tier) => tiers[tier] > 0 && <div
+                        key={tier}
+                        className={`claims-bar-segment ${tier}`}
+                        style={{ height: `${(tiers[tier] / count) * 100}%` }}
+                      />)}
+                    </div>
+                    <span className="claims-bar-label">{months[i].label}</span>
+                  </div>;
+                })}
               </div>
             </button>)}
             {activeSummaries.length % 2 === 1 && <div className="claims-card claims-card-placeholder" aria-hidden="true" />}
@@ -2370,8 +2645,9 @@ function Dashboard({ account, onLogout }: { account: Account; onLogout: () => vo
   const [accounts, setAccounts] = useState<PublicAccount[]>([]);
   const [membersError, setMembersError] = useState("");
   const [accountMessage, setAccountMessage] = useState<{ kind: "error" | "success"; text: string } | null>(null);
-  const [memberView, setMemberView] = useState<"overview" | "receipts">("overview");
   const [adminView, setAdminView] = useState<"overview" | "members" | "add">("overview");
+  const [memberView, setMemberView] = useState<"submit" | "history">("submit");
+  const [memberHistoryRefresh, setMemberHistoryRefresh] = useState(0);
   const [showProfile, setShowProfile] = useState(false);
   const isAdmin = account.role === "admin";
   const refresh = useCallback(async () => {
@@ -2413,32 +2689,32 @@ function Dashboard({ account, onLogout }: { account: Account; onLogout: () => vo
     <div className="dashboard-body">
       <aside className="sidebar"><p className="nav-label">WORKSPACE</p>
         {isAdmin ? <>
-              <button type="button" className={`nav-item ${!showProfile && adminView === "overview" ? "active" : ""}`} onClick={() => { setShowProfile(false); setAdminView("overview"); }}>Overview</button>
-              <button type="button" className={`nav-item ${!showProfile && adminView === "members" ? "active" : ""}`} onClick={() => { setShowProfile(false); setAdminView("members"); }}>Dashboard</button>
-              <button type="button" className={`nav-item ${!showProfile && adminView === "add" ? "active" : ""}`} onClick={() => { setShowProfile(false); setAdminView("add"); }}>Add members</button>
+              <button type="button" className={`nav-item ${!showProfile && adminView === "overview" ? "active" : ""}`} onClick={() => { setShowProfile(false); setAdminView("overview"); }}>Claims review</button>
+              <button type="button" className={`nav-item ${!showProfile && adminView === "members" ? "active" : ""}`} onClick={() => { setShowProfile(false); setAdminView("members"); }}>Claim activity</button>
+              <button type="button" className={`nav-item ${!showProfile && adminView === "add" ? "active" : ""}`} onClick={() => { setShowProfile(false); setAdminView("add"); }}>Employees</button>
             </>
           : <>
-              <button type="button" className={`nav-item ${!showProfile && memberView === "overview" ? "active" : ""}`} onClick={() => { setShowProfile(false); setMemberView("overview"); }}>Overview</button>
-              <button type="button" className={`nav-item ${!showProfile && memberView === "receipts" ? "active" : ""}`} onClick={() => { setShowProfile(false); setMemberView("receipts"); }}>Submitted receipts</button>
+              <button type="button" className={`nav-item ${!showProfile && memberView === "submit" ? "active" : ""}`} onClick={() => { setShowProfile(false); setMemberView("submit"); }}>Submit claim</button>
+              <button type="button" className={`nav-item ${!showProfile && memberView === "history" ? "active" : ""}`} onClick={() => { setShowProfile(false); setMemberView("history"); }}>Claim history</button>
             </>}
-        <div className="sidebar-note"><strong>{isAdmin ? "Admin access" : "Member access"}</strong><span>{isAdmin ? "History and account management" : "Receipt checking only"}</span></div></aside>
+        <div className="sidebar-note"><strong>{isAdmin ? "HR access" : "Employee access"}</strong><span>{isAdmin ? "Review claims and manage employees" : "Submit receipts for reimbursement"}</span></div></aside>
       <section className="content">
-        <div className="page-heading"><div><p className="eyebrow">{showProfile ? "YOUR PROFILE" : account.role.toUpperCase() + " WORKSPACE"}</p><h1>Hello, {account.name}</h1></div></div>
+        <div className="page-heading"><div><p className="eyebrow">{showProfile ? "YOUR PROFILE" : isAdmin ? "HR WORKSPACE" : "EMPLOYEE WORKSPACE"}</p><h1>Hello, {account.name}</h1></div></div>
         {showProfile ? <ProfileTab account={account} />
           : isAdmin ? adminView === "overview"
-          ? <ReceiptHistory showMember canEdit eyebrow="CHECK HISTORY" title="Receipt checks" emptyText="No receipts have been checked yet." />
+          ? <ReceiptHistory showMember canEdit eyebrow="HR REVIEW QUEUE" title="Employee reimbursement claims" emptyText="No employee claims have been submitted yet." />
           : adminView === "members"
           ? <UserClaimsDashboard accounts={accounts} />
           : <div className="admin-grid">
-              <section className="surface"><h2>Add an account</h2><p>Send a private password setup invite to an admin or a member.</p><AddAccount onAdded={refresh} /></section>
-              <section className="surface"><h2>Members</h2><p>{accounts.length} account{accounts.length === 1 ? "" : "s"}</p>
+              <section className="surface"><h2>Add an employee</h2><p>Send a private password setup invite to an employee who needs to submit claims.</p><AddAccount onAdded={refresh} /></section>
+              <section className="surface"><h2>Employees</h2><p>{accounts.length} account{accounts.length === 1 ? "" : "s"}</p>
                 {accountMessage && <p className={`message ${accountMessage.kind}`}>{accountMessage.text}</p>}
                 {membersError ? <p className="message error" role="alert">{membersError}</p> : accounts.length ? <div className="member-list">{accounts.map((member) => <div className="member-row" key={member.id}><span className="avatar">{member.name[0].toUpperCase()}</span><div className="member-details"><strong>{member.name}</strong><span>{member.email}</span><span className="member-role">{member.role}</span></div><div className="member-actions"><span className="status member-status">Active</span>{member.id !== account.id && <button type="button" className="delete-member-button" onClick={() => removeAccount(member.id)}>Remove</button>}</div></div>)}</div> : <div className="empty-state"><span>01</span><p>No accounts yet. Add the first account using the form.</p></div>}
               </section>
             </div>
-          : memberView === "overview"
-          ? <ReceiptUpload />
-          : <ReceiptHistory showMember={false} canEdit eyebrow="YOUR RECEIPTS" title="Submitted receipts" emptyText="You haven't submitted any receipts yet." />}
+          : memberView === "submit"
+          ? <ReceiptUpload onAnalyzed={() => setMemberHistoryRefresh((value) => value + 1)} />
+          : <MemberClaimHistory refreshKey={memberHistoryRefresh} />}
       </section>
     </div>
   </main>;

@@ -16,6 +16,9 @@ export type ReceiptRecord = {
   status: string;
   createdAt: string;
   reviewedAt: string | null;
+  // Flag ids HR has marked as false positives; the UI dims these and drops them
+  // from the active-concern count.
+  ignoredFlags: string[];
   uploader: { name: string; email: string } | null;
 };
 
@@ -34,11 +37,12 @@ export type ReceiptRow = {
   status: string;
   created_at: string;
   reviewed_at: string | null;
+  ignored_flags: string[] | null;
   uploader?: UploaderJoin;
 };
 
 export const RECEIPT_COLUMNS =
-  "id,uploaded_by,claim_type,file_name,file_kind,score,tier,result,final_decision,status,created_at,reviewed_at";
+  "id,uploaded_by,claim_type,file_name,file_kind,score,tier,result,final_decision,status,created_at,reviewed_at,ignored_flags";
 
 export function toReceiptRecord(row: ReceiptRow): ReceiptRecord {
   const uploaderRaw = Array.isArray(row.uploader) ? row.uploader[0] : row.uploader;
@@ -54,6 +58,7 @@ export function toReceiptRecord(row: ReceiptRow): ReceiptRecord {
     status: row.status,
     createdAt: row.created_at,
     reviewedAt: row.reviewed_at,
+    ignoredFlags: row.ignored_flags ?? [],
     uploader: uploaderRaw ? { name: uploaderRaw.name, email: uploaderRaw.email } : null,
   };
 }

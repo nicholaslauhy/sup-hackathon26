@@ -6,7 +6,6 @@ import { extractClaimFields } from "./claim-extract";
 import { arithmeticFlag } from "./checks/arithmetic";
 import { fontConsistencyFlag, physicalAlterationFlag } from "./checks/forensics";
 import { receiptDocumentFlag } from "./checks/receipt-document";
-import { roundNumbersFlag } from "./checks/round-numbers";
 import { extractFields, type ExtractResult } from "./extract";
 import { imageMetadataFlags, pdfMetadataFlags } from "./metadata";
 import { authenticReferenceFlag } from "./references";
@@ -186,10 +185,10 @@ export async function analyzeReceipt(input: AnalyzeInput): Promise<AnalysisResul
     shape = await documentShapeSignal(input.bytes);
   }
 
-  let vision: Awaited<ReturnType<typeof analyzeImageForensics>> = null;
-  if (input.fileKind === "JPEG" || input.fileKind === "PNG") {
-    vision = await analyzeImageForensics(input.bytes, input.fileKind);
-  }
+  // Image-forensics runs on every supported file kind: images directly, PDFs
+  // via the Responses file input, and HEIC after a sharp decode. Failure stays
+  // soft (null -> the dependent checks remain pending).
+  const vision = await analyzeImageForensics(input.bytes, input.fileKind);
 
   const [claimExtracted, referenceFlag] = await Promise.all([
     extractClaimFields(input.bytes, input.fileKind, input.claimType),
@@ -204,8 +203,13 @@ export async function analyzeReceipt(input: AnalyzeInput): Promise<AnalysisResul
   // deterministic/OCR and image-forensics checks.
   flags.unshift(receiptDocumentFlag(extractResult, shape));
   flags.push(referenceFlag);
-  flags.push(arithmeticFlag(commonExtracted, confidence));
-  flags.push(roundNumbersFlag(commonExtracted, confidence));
+  // The VLM (claim extraction) reads structured amounts far more reliably than
+  // OCR. When it ran, feed its merged fields at high confidence so the line-item
+  // arithmetic and round-amount checks evaluate the VLM numbers instead of the
+  // noisy OCR ones; otherwise fall back to the OCR extraction unchanged.
+  const moneyFields = claimExtracted ? extracted : commonExtracted;
+  const moneyConfidence = claimExtracted ? 95 : confidence;
+  flags.push(arithmeticFlag(moneyFields, moneyConfidence));
   flags.push(fontConsistencyFlag(vision, input.fileKind));
   flags.push(physicalAlterationFlag(vision, input.fileKind));
 

@@ -16,7 +16,26 @@ export type ReceiptRecord = {
   status: string;
   createdAt: string;
   reviewedAt: string | null;
+  // Flag ids HR has dismissed as false positives (e.g. a misfired AI check).
+  ignoredFlags: string[];
   uploader: { name: string; email: string } | null;
+};
+
+export type ClaimSubmission = {
+  id: string;
+  fileName: string;
+  claimType: ReceiptType;
+  createdAt: string;
+};
+
+export type ClaimHistoryRecord = {
+  id: string;
+  claimType: ReceiptType;
+  fileName: string;
+  finalDecision: FinalDecision;
+  status: string;
+  createdAt: string;
+  reviewedAt: string | null;
 };
 
 async function readJson<T>(response: Response): Promise<T> {
@@ -25,17 +44,23 @@ async function readJson<T>(response: Response): Promise<T> {
   return body as T;
 }
 
-export async function analyzeReceipt(file: File, claimType: ReceiptType): Promise<ReceiptRecord> {
+export async function analyzeReceipt(file: File, claimType: ReceiptType): Promise<ClaimSubmission> {
   const form = new FormData();
   form.append("file", file);
   form.append("claimType", claimType);
-  return readJson<{ receipt: ReceiptRecord }>(
+  return readJson<{ submission: ClaimSubmission }>(
     await fetch("/api/analyze", { method: "POST", body: form }),
-  ).then((body) => body.receipt);
+  ).then((body) => body.submission);
 }
 
 export async function getReceipts(): Promise<ReceiptRecord[]> {
   return readJson<{ receipts: ReceiptRecord[] }>(
+    await fetch("/api/receipts", { cache: "no-store" }),
+  ).then((body) => body.receipts);
+}
+
+export async function getClaimHistory(): Promise<ClaimHistoryRecord[]> {
+  return readJson<{ receipts: ClaimHistoryRecord[] }>(
     await fetch("/api/receipts", { cache: "no-store" }),
   ).then((body) => body.receipts);
 }
@@ -46,6 +71,18 @@ export async function recordDecision(id: string, decision: "authentic" | "reject
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ decision }),
+    }),
+  ).then((body) => body.receipt);
+}
+
+// HR marks a fraud-check flag as a false positive (or restores it). Sends the
+// full desired set of ignored flag ids; the server de-duplicates and persists.
+export async function setIgnoredFlags(id: string, ignoredFlags: string[]): Promise<ReceiptRecord> {
+  return readJson<{ receipt: ReceiptRecord }>(
+    await fetch(`/api/receipts/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ignoredFlags }),
     }),
   ).then((body) => body.receipt);
 }
