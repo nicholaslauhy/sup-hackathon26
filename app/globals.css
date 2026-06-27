@@ -1836,3 +1836,112 @@ button.nav-item:hover:not(.active) { color:var(--green); }
 .ocr-status.error span {
   color: #8f3b35;
 }
+
+/* v8: estimated OCR row circle */
+.receipt-box.synthetic.circle {
+  border-radius: 999px;
+  border-style: dashed;
+  border-width: 2px;
+  background: rgba(210, 59, 49, .10);
+}
+
+/* v9: show all flagged regions and choose which manual box to edit */
+.bbox-editor-panel select {
+  width: 100%;
+  height: 38px;
+  padding: 0 10px;
+  border: 1px solid #ccd9d3;
+  border-radius: 8px;
+  color: var(--ink);
+  background: white;
+  font: 12px Arial, Helvetica, sans-serif;
+}
+
+.bbox-editor-panel select:focus {
+  outline: 2px solid #cfe7dc;
+  border-color: var(--green);
+}
+
+.bbox-missing-note {
+  display: block;
+  color: #8f3b35;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+
+/* Fresh automatic total-mismatch bounding boxes */
+.auto-box-status {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid #dbe5df;
+  border-radius: 12px;
+  background: #fbfcfa;
+  display: grid;
+  gap: 5px;
+}
+
+.auto-box-status strong {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.auto-box-status span,
+.auto-box-status small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.auto-box-status small {
+  color: #8f3b35;
+}
+
+.receipt-box.synthetic {
+  border-style: dashed;
+  border-width: 2px;
+}
+
+.receipt-box.user-edited {
+  border-style: solid;
+  border-color: #0f5c4d;
+  background: rgba(15, 92, 77, .12);
+}
+
+.receipt-box.user-edited span {
+  background: #0f5c4d;
+}
+
+.bbox-editor-panel select {
+  width: 100%;
+  height: 38px;
+  padding: 0 10px;
+  border: 1px solid #ccd9d3;
+  border-radius: 8px;
+  color: var(--ink);
+  background: white;
+  font: 12px Arial, Helvetica, sans-serif;
+}
+
+.bbox-editor-panel select:focus {
+  outline: 2px solid #cfe7dc;
+  border-color: var(--green);
+}
+
+/* Drag preview fix: show the in-progress box while the user is dragging */
+.receipt-preview-stage.drawing-active .receipt-overlay {
+  z-index: 6;
+}
+
+.receipt-preview-stage.drawing-active .receipt-box.user-edited {
+  border-style: dashed;
+  border-width: 2px;
+  border-color: #0f5c4d;
+  background: rgba(15, 92, 77, .16);
+  box-shadow: 0 0 0 9999px rgba(15, 92, 77, .035), 0 8px 20px rgba(15, 92, 77, .20);
+}
+
+.receipt-preview-stage.drawing-active .receipt-draw-layer {
+  z-index: 5;
+  background: rgba(15, 92, 77, .015);
+}

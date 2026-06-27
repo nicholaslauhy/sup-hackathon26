@@ -523,6 +523,11 @@ type ClientOcrLine = EvidenceRegion & {
   confidence?: number;
 };
 
+type PlainOcrLine = {
+  text: string;
+  index: number;
+};
+
 type FlagWithRegionEvidence = Flag & {
   evidence?: Flag["evidence"] & {
     regions?: unknown;
@@ -669,6 +674,241 @@ function flagRegions(flag: Flag | null): EvidenceRegion[] {
   const parsed = rawRegions.map(parseRegion).filter((region): region is EvidenceRegion => Boolean(region));
   return parsed.length > 0 ? parsed : fallbackRegions(flag);
 }
+
+function uniqueRegionKey(region: EvidenceRegion) {
+  return [
+    region.x.toFixed(4),
+    region.y.toFixed(4),
+    region.width.toFixed(4),
+    region.height.toFixed(4),
+    region.label ?? "",
+  ].join("|");
+}
+
+function allTriggeredFlagRegions(flags: Flag[]) {
+  const seen = new Set<string>();
+  const allRegions: { flag: Flag; region: EvidenceRegion }[] = [];
+
+  flags
+    .filter((flag) => flag.status === "triggered")
+    .forEach((flag) => {
+      flagRegions(flag).forEach((region) => {
+        const key = `${flag.id}|${uniqueRegionKey(region)}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        allRegions.push({ flag, region });
+      });
+    });
+
+  return allRegions;
+}
+
+function triggeredFlagsNeedingManualRegion(flags: Flag[]) {
+  return flags.filter((flag) => flag.status === "triggered" && flagRegions(flag).length === 0);
+}
+
+
+type ReceiptTextRow = EvidenceRegion & {
+  inkPixels: number;
+  index: number;
+};
+
+function scanReceiptTextRows(image: HTMLImageElement): ReceiptTextRow[] {
+  const width = image.naturalWidth;
+  const height = image.naturalHeight;
+  if (width <= 0 || height <= 0) return [];
+
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) return [];
+
+  try {
+    context.drawImage(image, 0, 0, width, height);
+  } catch {
+    return [];
+  }
+
+  let imageData: ImageData;
+  try {
+    imageData = context.getImageData(0, 0, width, height);
+  } catch {
+    // This happens when the browser cannot read the image because it is loaded
+    // from a cross-origin signed URL. Use the same-origin raw file route in this pack.
+    return [];
+  }
+
+  const data = imageData.data;
+  const rows: { count: number; minX: number; maxX: number }[] = Array.from({ length: height }, () => ({
+    count: 0,
+    minX: width,
+    maxX: 0,
+  }));
+
+  for (let y = 0; y < height; y += 1) {
+    const row = rows[y];
+
+    for (let x = 0; x < width; x += 1) {
+      const offset = (y * width + x) * 4;
+      const r = data[offset];
+      const g = data[offset + 1];
+      const b = data[offset + 2];
+      const alpha = data[offset + 3];
+      if (alpha < 80) continue;
+
+      const average = (r + g + b) / 3;
+      const darkness = 255 - average;
+      const saturation = Math.max(r, g, b) - Math.min(r, g, b);
+
+      // Text in the receipt is dark. This also captures dark handwritten/tampered
+      // values, but excludes pale background/shadows.
+      const isInk = darkness > 58 && average < 205 && saturation < 90;
+      if (!isInk) continue;
+
+      row.count += 1;
+      row.minX = Math.min(row.minX, x);
+      row.maxX = Math.max(row.maxX, x);
+    }
+  }
+
+  const minPixelsPerRow = Math.max(4, Math.floor(width * 0.006));
+  const bands: { top: number; bottom: number; minX: number; maxX: number; inkPixels: number }[] = [];
+  let active: { top: number; bottom: number; minX: number; maxX: number; inkPixels: number } | null = null;
+
+  rows.forEach((row, y) => {
+    const hasInk = row.count >= minPixelsPerRow;
+
+    if (hasInk && !active) {
+      active = { top: y, bottom: y, minX: row.minX, maxX: row.maxX, inkPixels: row.count };
+      return;
+    }
+
+    if (hasInk && active) {
+      active.bottom = y;
+      active.minX = Math.min(active.minX, row.minX);
+      active.maxX = Math.max(active.maxX, row.maxX);
+      active.inkPixels += row.count;
+      return;
+    }
+
+    if (!hasInk && active) {
+      bands.push(active);
+      active = null;
+    }
+  });
+
+  if (active) bands.push(active);
+
+  const merged: typeof bands = [];
+  const maxGap = Math.max(3, Math.floor(height * 0.006));
+
+  bands.forEach((band) => {
+    const previous = merged[merged.length - 1];
+    if (previous && band.top - previous.bottom <= maxGap) {
+      previous.bottom = band.bottom;
+      previous.minX = Math.min(previous.minX, band.minX);
+      previous.maxX = Math.max(previous.maxX, band.maxX);
+      previous.inkPixels += band.inkPixels;
+    } else {
+      merged.push({ ...band });
+    }
+  });
+
+  return merged
+    .map((band, index) => {
+      const padX = Math.max(4, width * 0.01);
+      const padY = Math.max(3, height * 0.008);
+      const left = Math.max(0, band.minX - padX);
+      const top = Math.max(0, band.top - padY);
+      const right = Math.min(width, band.maxX + padX);
+      const bottom = Math.min(height, band.bottom + padY);
+
+      return {
+        index,
+        x: left / width,
+        y: top / height,
+        width: (right - left) / width,
+        height: (bottom - top) / height,
+        inkPixels: band.inkPixels,
+        shape: "box" as const,
+      };
+    })
+    .filter((row) => {
+      // Ignore tiny specks and horizontal receipt separator lines.
+      if (row.width < 0.045 || row.height < 0.012) return false;
+      if (row.height < 0.018 && row.width > 0.55) return false;
+      return true;
+    })
+    .sort((a, b) => a.y - b.y)
+    .map((row, index) => ({ ...row, index }));
+}
+
+function targetAmountLineLabel(flag: Flag) {
+  const summary = arithmeticMismatchSummary(flag);
+  const label = normalizeArithmeticLabel(summary?.targetLineLabel ?? summary?.expectedLabel ?? summary?.label, "TOTAL");
+  const normalized = normalizedSearchText(label);
+
+  if (normalized.includes("balance due")) return "BALANCE DUE";
+  if (normalized.includes("amount due")) return "AMOUNT DUE";
+  return "TOTAL";
+}
+
+function pickArithmeticMismatchRow(flag: Flag, rows: ReceiptTextRow[]): EvidenceRegion | null {
+  if (flag.status !== "triggered" || !isArithmeticFlag(flag) || rows.length === 0) return null;
+
+  const summary = arithmeticMismatchSummary(flag);
+  if (!summary || summary.actualAmount === null || summary.expectedAmount === null) return null;
+
+  const target = targetAmountLineLabel(flag);
+  const centerY = (row: ReceiptTextRow) => row.y + row.height / 2;
+
+  // Main receipt amount block is usually below the store/address header and
+  // above footer/date/thank-you text. This is not a fixed box coordinate: it is
+  // choosing from detected dark text rows in the actual image.
+  let candidates = rows.filter((row) => centerY(row) >= 0.42 && centerY(row) <= 0.86);
+
+  if (target === "TOTAL") {
+    // For a TOTAL mismatch, choose the last amount-like row before the footer.
+    // Rows after 0.80 are usually Date / Thank-you / footer text in generated
+    // receipts, so drop them when there are earlier candidates.
+    const beforeFooter = candidates.filter((row) => centerY(row) <= 0.80);
+    if (beforeFooter.length > 0) candidates = beforeFooter;
+
+    // If the final candidate is a very wide footer/date row, drop it.
+    const sorted = [...candidates].sort((a, b) => centerY(a) - centerY(b));
+    while (sorted.length > 1) {
+      const last = sorted[sorted.length - 1];
+      if (last.width > 0.58 && centerY(last) > 0.68) sorted.pop();
+      else break;
+    }
+
+    const picked = sorted[sorted.length - 1] ?? candidates[candidates.length - 1] ?? rows[rows.length - 1];
+    return {
+      x: picked.x,
+      y: Math.max(0, picked.y - 0.006),
+      width: Math.min(1 - picked.x, picked.width),
+      height: Math.min(1 - Math.max(0, picked.y - 0.006), picked.height + 0.012),
+      label: `${target}: printed $${summary.expectedAmount.toFixed(2)}, expected $${summary.actualAmount.toFixed(2)}`,
+      shape: "box",
+      synthetic: true,
+    };
+  }
+
+  // Balance due / amount due receipts often place the value near the bottom.
+  const picked = [...candidates].sort((a, b) => centerY(b) - centerY(a))[0] ?? rows[rows.length - 1];
+  return {
+    x: picked.x,
+    y: Math.max(0, picked.y - 0.006),
+    width: Math.min(1 - picked.x, picked.width),
+    height: Math.min(1 - Math.max(0, picked.y - 0.006), picked.height + 0.012),
+    label: `${target}: printed $${summary.expectedAmount.toFixed(2)}, expected $${summary.actualAmount.toFixed(2)}`,
+    shape: "box",
+    synthetic: true,
+  };
+}
+
 
 function hasVisualEvidence(flag: Flag) {
   return flagRegions(flag).length > 0;
@@ -818,6 +1058,174 @@ function clientOcrLineText(line: ClientOcrLine) {
   return normalizedSearchText(line.text);
 }
 
+
+
+function ocrNodeToClientLine(node: unknown, imageWidth: number, imageHeight: number): ClientOcrLine | null {
+  if (!isRecord(node) || imageWidth <= 0 || imageHeight <= 0) return null;
+
+  const text = String(node.text ?? node.label ?? node.name ?? "").trim();
+  if (!text) return null;
+
+  const bbox = isRecord(node.bbox) ? node.bbox : node;
+  const x0 = readNumber(bbox.x0 ?? bbox.left ?? bbox.x);
+  const y0 = readNumber(bbox.y0 ?? bbox.top ?? bbox.y);
+  const x1 = readNumber(bbox.x1 ?? bbox.right);
+  const y1 = readNumber(bbox.y1 ?? bbox.bottom);
+  const width = readNumber(bbox.width ?? bbox.w);
+  const height = readNumber(bbox.height ?? bbox.h);
+
+  if (x0 === null || y0 === null) return null;
+
+  const right = x1 ?? (width !== null ? x0 + width : null);
+  const bottom = y1 ?? (height !== null ? y0 + height : null);
+  if (right === null || bottom === null) return null;
+
+  const normalizedLine = {
+    text,
+    x: x0 / imageWidth,
+    y: y0 / imageHeight,
+    width: (right - x0) / imageWidth,
+    height: (bottom - y0) / imageHeight,
+    shape: "box" as const,
+    confidence: readNumber(node.confidence ?? node.conf) ?? undefined,
+  };
+
+  if (
+    normalizedLine.x < 0 ||
+    normalizedLine.y < 0 ||
+    normalizedLine.width <= 0 ||
+    normalizedLine.height <= 0 ||
+    normalizedLine.x > 1 ||
+    normalizedLine.y > 1 ||
+    normalizedLine.width > 1 ||
+    normalizedLine.height > 1
+  ) {
+    return null;
+  }
+
+  return normalizedLine;
+}
+
+function collectOcrNodes(value: unknown, imageWidth: number, imageHeight: number, output: ClientOcrLine[] = []) {
+  if (Array.isArray(value)) {
+    value.forEach((entry) => collectOcrNodes(entry, imageWidth, imageHeight, output));
+    return output;
+  }
+
+  if (!isRecord(value)) return output;
+
+  const line = ocrNodeToClientLine(value, imageWidth, imageHeight);
+  if (line) output.push(line);
+
+  for (const key of ["lines", "words", "paragraphs", "blocks", "children", "items"]) {
+    const nested = value[key];
+    if (Array.isArray(nested)) collectOcrNodes(nested, imageWidth, imageHeight, output);
+  }
+
+  return output;
+}
+
+function tsvToClientLines(tsv: unknown, imageWidth: number, imageHeight: number): ClientOcrLine[] {
+  if (typeof tsv !== "string" || imageWidth <= 0 || imageHeight <= 0) return [];
+
+  const rows = tsv
+    .split(/\r?\n/)
+    .map((row) => row.trimEnd())
+    .filter(Boolean);
+
+  if (rows.length < 2) return [];
+
+  const header = rows[0].split("\t");
+  const indexOf = (name: string) => header.indexOf(name);
+
+  const levelIndex = indexOf("level");
+  const pageIndex = indexOf("page_num");
+  const blockIndex = indexOf("block_num");
+  const parIndex = indexOf("par_num");
+  const lineIndex = indexOf("line_num");
+  const leftIndex = indexOf("left");
+  const topIndex = indexOf("top");
+  const widthIndex = indexOf("width");
+  const heightIndex = indexOf("height");
+  const confIndex = indexOf("conf");
+  const textIndex = indexOf("text");
+
+  if ([leftIndex, topIndex, widthIndex, heightIndex, textIndex].some((index) => index < 0)) return [];
+
+  const groups = new Map<string, {
+    words: string[];
+    left: number;
+    top: number;
+    right: number;
+    bottom: number;
+    confidences: number[];
+  }>();
+
+  rows.slice(1).forEach((row) => {
+    const cols = row.split("\t");
+    const word = (cols[textIndex] ?? "").trim();
+    if (!word) return;
+
+    const left = readNumber(cols[leftIndex]);
+    const top = readNumber(cols[topIndex]);
+    const width = readNumber(cols[widthIndex]);
+    const height = readNumber(cols[heightIndex]);
+    if (left === null || top === null || width === null || height === null || width <= 0 || height <= 0) return;
+
+    const key = [
+      pageIndex >= 0 ? cols[pageIndex] : "0",
+      blockIndex >= 0 ? cols[blockIndex] : "0",
+      parIndex >= 0 ? cols[parIndex] : "0",
+      lineIndex >= 0 ? cols[lineIndex] : "0",
+    ].join(":");
+
+    const confidence = confIndex >= 0 ? readNumber(cols[confIndex]) : null;
+    const current = groups.get(key);
+
+    if (!current) {
+      groups.set(key, {
+        words: [word],
+        left,
+        top,
+        right: left + width,
+        bottom: top + height,
+        confidences: confidence !== null && confidence >= 0 ? [confidence] : [],
+      });
+      return;
+    }
+
+    current.words.push(word);
+    current.left = Math.min(current.left, left);
+    current.top = Math.min(current.top, top);
+    current.right = Math.max(current.right, left + width);
+    current.bottom = Math.max(current.bottom, top + height);
+    if (confidence !== null && confidence >= 0) current.confidences.push(confidence);
+  });
+
+  return [...groups.values()]
+    .map((group) => ({
+      text: group.words.join(" "),
+      x: group.left / imageWidth,
+      y: group.top / imageHeight,
+      width: (group.right - group.left) / imageWidth,
+      height: (group.bottom - group.top) / imageHeight,
+      shape: "box" as const,
+      confidence: group.confidences.length
+        ? group.confidences.reduce((sum, value) => sum + value, 0) / group.confidences.length
+        : undefined,
+    }))
+    .filter((line) => line.x >= 0 && line.y >= 0 && line.width > 0 && line.height > 0 && line.x <= 1 && line.y <= 1 && line.width <= 1 && line.height <= 1);
+}
+
+function uniqueClientLines(lines: ClientOcrLine[]) {
+  const seen = new Set<string>();
+  return lines.filter((line) => {
+    const key = `${line.text}|${line.x.toFixed(4)}|${line.y.toFixed(4)}|${line.width.toFixed(4)}|${line.height.toFixed(4)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
 
 function tesseractLinesToClientLines(lines: unknown[], imageWidth: number, imageHeight: number): ClientOcrLine[] {
   if (!Array.isArray(lines) || imageWidth <= 0 || imageHeight <= 0) return [];
@@ -984,50 +1392,225 @@ function deriveRegionFromClientOcrLines(flag: Flag | null, lines: ClientOcrLine[
 }
 
 
+function plainOcrLinesFromText(value: unknown): PlainOcrLine[] {
+  if (typeof value !== "string") return [];
+
+  return value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line, index) => ({ text: line, index }));
+}
+
+function scorePlainLineForFlag(flag: Flag | null, lineText: string) {
+  if (!flag || !isArithmeticFlag(flag)) return 0;
+
+  const summary = arithmeticMismatchSummary(flag);
+  if (!summary) return 0;
+
+  const text = normalizedSearchText(lineText);
+  const targetLabel = normalizedSearchText(summary.targetLineLabel || summary.expectedLabel || "total");
+  const expectedMoney = moneySearchText(summary.expectedAmount);
+  const actualMoney = moneySearchText(summary.actualAmount);
+
+  let score = 0;
+
+  if (targetLabel && text.includes(targetLabel)) score += 100;
+  if (targetLabel === "total" && /\btotal\b/.test(text) && !text.includes("subtotal")) score += 95;
+  if (targetLabel.includes("balance due") && text.includes("balance") && text.includes("due")) score += 100;
+  if (targetLabel.includes("amount due") && text.includes("amount") && text.includes("due")) score += 100;
+
+  if (expectedMoney && text.includes(expectedMoney)) score += 85;
+  if (actualMoney && text.includes(actualMoney)) score -= 45;
+
+  if (text.includes("subtotal")) score -= 90;
+  if (text.includes("gst") || text.includes("tax")) score -= 70;
+  if (text.includes("tendered") || text.includes("paid") || text.includes("change")) score -= 100;
+  if (text.includes("thank") || text.includes("come again")) score -= 100;
+
+  return score;
+}
+
+function bestPlainLineIndexForFlag(flag: Flag | null, lines: PlainOcrLine[]) {
+  if (!flag || lines.length === 0) return null;
+
+  const scored = lines
+    .map((line) => ({ line, score: scorePlainLineForFlag(flag, line.text) }))
+    .sort((a, b) => b.score - a.score || b.line.index - a.line.index);
+
+  const best = scored[0];
+  if (!best || best.score <= 0) return null;
+  return best.line.index;
+}
+
+function estimateTextRowRegionsFromImage(image: HTMLImageElement): EvidenceRegion[] {
+  const width = image.naturalWidth;
+  const height = image.naturalHeight;
+  if (width <= 0 || height <= 0) return [];
+
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) return [];
+
+  context.drawImage(image, 0, 0, width, height);
+  const data = context.getImageData(0, 0, width, height).data;
+
+  const rowBounds: { count: number; minX: number; maxX: number }[] = Array.from({ length: height }, () => ({
+    count: 0,
+    minX: width,
+    maxX: 0,
+  }));
+
+  for (let y = 0; y < height; y += 1) {
+    const row = rowBounds[y];
+
+    for (let x = 0; x < width; x += 1) {
+      const offset = (y * width + x) * 4;
+      const r = data[offset];
+      const g = data[offset + 1];
+      const b = data[offset + 2];
+      const alpha = data[offset + 3];
+
+      if (alpha < 80) continue;
+
+      const darkness = 255 - ((r + g + b) / 3);
+      const isInk = darkness > 65 && r < 210 && g < 210 && b < 210;
+
+      if (!isInk) continue;
+
+      row.count += 1;
+      row.minX = Math.min(row.minX, x);
+      row.maxX = Math.max(row.maxX, x);
+    }
+  }
+
+  const minPixelsPerRow = Math.max(4, Math.floor(width * 0.006));
+  const bands: { top: number; bottom: number; minX: number; maxX: number; pixels: number }[] = [];
+  let active: { top: number; bottom: number; minX: number; maxX: number; pixels: number } | null = null;
+
+  rowBounds.forEach((row, y) => {
+    const hasInk = row.count >= minPixelsPerRow;
+
+    if (hasInk && !active) {
+      active = { top: y, bottom: y, minX: row.minX, maxX: row.maxX, pixels: row.count };
+      return;
+    }
+
+    if (hasInk && active) {
+      active.bottom = y;
+      active.minX = Math.min(active.minX, row.minX);
+      active.maxX = Math.max(active.maxX, row.maxX);
+      active.pixels += row.count;
+      return;
+    }
+
+    if (!hasInk && active) {
+      bands.push(active);
+      active = null;
+    }
+  });
+
+  if (active) bands.push(active);
+
+  const merged: typeof bands = [];
+  bands.forEach((band) => {
+    const last = merged[merged.length - 1];
+    if (last && band.top - last.bottom <= Math.max(3, height * 0.006)) {
+      last.bottom = band.bottom;
+      last.minX = Math.min(last.minX, band.minX);
+      last.maxX = Math.max(last.maxX, band.maxX);
+      last.pixels += band.pixels;
+    } else {
+      merged.push({ ...band });
+    }
+  });
+
+  return merged
+    .map((band) => {
+      const padX = Math.max(3, width * 0.008);
+      const padY = Math.max(2, height * 0.004);
+
+      return {
+        x: Math.max(0, (band.minX - padX) / width),
+        y: Math.max(0, (band.top - padY) / height),
+        width: Math.min(1, (band.maxX - band.minX + (padX * 2)) / width),
+        height: Math.min(1, (band.bottom - band.top + (padY * 2)) / height),
+        shape: "box" as const,
+      };
+    })
+    .filter((region) => region.width > 0.015 && region.height > 0.008)
+    .sort((a, b) => a.y - b.y);
+}
+
+function estimateRegionFromPlainOcrAndImage(flag: Flag | null, plainLines: PlainOcrLine[], image: HTMLImageElement | null): EvidenceRegion[] {
+  if (!flag || !isArithmeticFlag(flag) || plainLines.length === 0 || !image) return [];
+
+  const matchedPlainIndex = bestPlainLineIndexForFlag(flag, plainLines);
+  if (matchedPlainIndex === null) return [];
+
+  const imageRows = estimateTextRowRegionsFromImage(image);
+  if (imageRows.length === 0) return [];
+
+  // OCR text lines and image pixel rows are both top-to-bottom. We map the matched
+  // OCR line index to the equivalent image row. This is not hardcoded to a fixed
+  // coordinate; it is derived from the receipt image pixels.
+  const rowIndex = Math.round((matchedPlainIndex / Math.max(1, plainLines.length - 1)) * Math.max(0, imageRows.length - 1));
+  const candidate = imageRows[Math.min(imageRows.length - 1, Math.max(0, rowIndex))];
+
+  if (!candidate) return [];
+
+  return [{
+    ...candidate,
+    label: arithmeticFallbackLabel(flag),
+    shape: "circle",
+    synthetic: true,
+  }];
+}
+
+
 function ReceiptFilePreview({
   receipt,
   selectedFlag,
-  manualRegion,
+  flags,
+  manualRegions,
   onManualRegionChange,
 }: {
   receipt: ReceiptRecord;
   selectedFlag: Flag | null;
-  manualRegion?: EvidenceRegion | null;
-  onManualRegionChange?: (region: EvidenceRegion | null) => void;
+  flags: Flag[];
+  manualRegions: Record<string, EvidenceRegion>;
+  onManualRegionChange: (flagId: string, region: EvidenceRegion | null) => void;
 }) {
   const [fileUrl, setFileUrl] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [zoom, setZoom] = useState(100);
+  const [autoRegions, setAutoRegions] = useState<Record<string, EvidenceRegion>>({});
+  const [detectedRowCount, setDetectedRowCount] = useState(0);
   const [isEditingBox, setIsEditingBox] = useState(false);
-  const [draftRegion, setDraftRegion] = useState<EvidenceRegion | null>(manualRegion ?? null);
+  const [editingFlagId, setEditingFlagId] = useState<string | null>(null);
+  const [draftRegion, setDraftRegion] = useState<EvidenceRegion | null>(null);
   const [boxComment, setBoxComment] = useState("");
   const [drawStart, setDrawStart] = useState<{ x: number; y: number } | null>(null);
-  const [clientOcrLines, setClientOcrLines] = useState<ClientOcrLine[]>([]);
-  const [clientOcrStatus, setClientOcrStatus] = useState<"idle" | "running" | "done" | "missing" | "error">("idle");
-  const [clientOcrMessage, setClientOcrMessage] = useState("");
-  const [imageNaturalSize, setImageNaturalSize] = useState<{ width: number; height: number } | null>(null);
+  const imageRef = useRef<HTMLImageElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
 
-  const analyzerRegions = flagRegions(selectedFlag);
-  const clientOcrRegions = analyzerRegions.length === 0 ? deriveRegionFromClientOcrLines(selectedFlag, clientOcrLines) : [];
-  const automaticRegions = analyzerRegions.length > 0 ? analyzerRegions : clientOcrRegions;
-  const regions = manualRegion ? [manualRegion] : automaticRegions;
+  const triggeredFlags = flags.filter((flag) => flag.status === "triggered");
+  const defaultEditFlag = selectedFlag?.status === "triggered" ? selectedFlag : triggeredFlags[0] ?? null;
+  const activeEditFlag = flags.find((flag) => flag.id === editingFlagId) ?? defaultEditFlag;
 
   useEffect(() => {
-    setDraftRegion(manualRegion ?? automaticRegions[0] ?? null);
-    setBoxComment(manualRegion?.label ?? (selectedFlag ? arithmeticFallbackLabel(selectedFlag) : ""));
-    setIsEditingBox(false);
-    setDrawStart(null);
-  }, [selectedFlag?.id, manualRegion?.x, manualRegion?.y, manualRegion?.width, manualRegion?.height, automaticRegions[0]?.x, automaticRegions[0]?.y, automaticRegions[0]?.width, automaticRegions[0]?.height]);
+    setEditingFlagId(defaultEditFlag?.id ?? null);
+  }, [defaultEditFlag?.id]);
 
   useEffect(() => {
     let active = true;
     setFileUrl(null);
     setError("");
-    setClientOcrLines([]);
-    setClientOcrStatus("idle");
-    setClientOcrMessage("");
-    setImageNaturalSize(null);
+    setAutoRegions({});
+    setDetectedRowCount(0);
 
     void (async () => {
       try {
@@ -1046,9 +1629,7 @@ function ReceiptFilePreview({
 
         if (active) setFileUrl(body.url);
       } catch (reason) {
-        if (active) {
-          setError(reason instanceof Error ? reason.message : "Unable to load receipt file.");
-        }
+        if (active) setError(reason instanceof Error ? reason.message : "Unable to load receipt file.");
       }
     })();
 
@@ -1060,67 +1641,63 @@ function ReceiptFilePreview({
   const kind = receipt.fileKind.toUpperCase();
   const imageKind = ["JPEG", "PNG", "JPG"].includes(kind);
   const pdfKind = kind === "PDF";
-  const previewUrl = fileUrl && pdfKind ? `${fileUrl}#toolbar=0&navpanes=0` : fileUrl;
-  const canEditBox = Boolean(imageKind && selectedFlag && selectedFlag.status === "triggered" && isArithmeticFlag(selectedFlag));
-  const shouldRunClientOcr = Boolean(previewUrl && imageKind && imageNaturalSize && selectedFlag?.status === "triggered" && isArithmeticFlag(selectedFlag) && analyzerRegions.length === 0 && !manualRegion);
+  const signedOpenUrl = fileUrl;
+  const imagePreviewUrl = imageKind ? `/api/receipts/${receipt.id}/file?raw=1` : null;
+  const pdfPreviewUrl = fileUrl && pdfKind ? `${fileUrl}#toolbar=0&navpanes=0` : null;
 
-  useEffect(() => {
-    let active = true;
+  function refreshAutoBoxes(image: HTMLImageElement) {
+    const rows = scanReceiptTextRows(image);
+    setDetectedRowCount(rows.length);
 
-    if (!shouldRunClientOcr || !previewUrl) {
-      if (!shouldRunClientOcr) {
-        setClientOcrStatus("idle");
-        setClientOcrMessage("");
-      }
-      return () => {
-        active = false;
-      };
+    const next: Record<string, EvidenceRegion> = {};
+    triggeredFlags.forEach((flag) => {
+      if (manualRegions[flag.id]) return;
+      if (flagRegions(flag).length > 0) return;
+
+      const picked = pickArithmeticMismatchRow(flag, rows);
+      if (picked) next[flag.id] = picked;
+    });
+
+    setAutoRegions(next);
+  }
+
+  const visibleRegionEntries = triggeredFlags.flatMap((flag) => {
+    if (isEditingBox && draftRegion && activeEditFlag?.id === flag.id) {
+      return [{ flag, region: draftRegion }];
     }
 
-    setClientOcrStatus("running");
-    setClientOcrMessage("Running OCR to locate the wrong printed amount...");
+    const manual = manualRegions[flag.id];
+    if (manual) return [{ flag, region: manual }];
 
-    void (async () => {
-      try {
-        const tesseract = await import("tesseract.js");
-        const result = await tesseract.recognize(previewUrl, "eng", {
-          logger: () => undefined,
-        });
+    const supplied = flagRegions(flag);
+    if (supplied.length > 0) return supplied.map((region) => ({ flag, region }));
 
-        if (!active) return;
+    const automatic = autoRegions[flag.id];
+    if (automatic) return [{ flag, region: automatic }];
 
-        const imageWidth = Number(result.data?.imageSize?.width ?? result.data?.imageWidth ?? imageNaturalSize?.width ?? 0);
-        const imageHeight = Number(result.data?.imageSize?.height ?? result.data?.imageHeight ?? imageNaturalSize?.height ?? 0);
+    return [];
+  });
 
-        const resultLines = Array.isArray(result.data?.lines) ? result.data.lines : [];
-        const words = Array.isArray(result.data?.words) ? result.data.words : [];
+  const missingFlags = triggeredFlags.filter((flag) => !visibleRegionEntries.some((entry) => entry.flag.id === flag.id));
+  const canEditBox = Boolean(imageKind && activeEditFlag);
 
-        const lineBoxes = tesseractLinesToClientLines(resultLines, imageWidth, imageHeight);
-        const wordLineBoxes = wordsToClientLines(words, imageWidth, imageHeight);
-        const lines = lineBoxes.length > 0 ? lineBoxes : wordLineBoxes;
-        const matchedRegions = deriveRegionFromClientOcrLines(selectedFlag, lines);
+  useEffect(() => {
+    if (!activeEditFlag) {
+      setDraftRegion(null);
+      setBoxComment("");
+      return;
+    }
 
-        setClientOcrLines(lines);
-        setClientOcrStatus("done");
-        setClientOcrMessage(
-          matchedRegions.length > 0
-            ? "OCR found the wrong amount line and drew the bounding box automatically."
-            : lines.length > 0
-              ? "OCR found text boxes, but could not confidently match the wrong amount line. Draw or edit the box for the human check."
-              : "OCR completed but no usable text boxes were found. Make sure the uploaded image is clear, or return OCR boxes from the backend."
-        );
-      } catch {
-        if (!active) return;
-        setClientOcrLines([]);
-        setClientOcrStatus("missing");
-        setClientOcrMessage("Automatic OCR is not available. Install tesseract.js, or return OCR line boxes from the backend.");
-      }
-    })();
+    const existing = manualRegions[activeEditFlag.id]
+      ?? flagRegions(activeEditFlag)[0]
+      ?? autoRegions[activeEditFlag.id]
+      ?? null;
 
-    return () => {
-      active = false;
-    };
-  }, [shouldRunClientOcr, previewUrl, selectedFlag?.id, receipt.id, analyzerRegions.length, manualRegion?.x, manualRegion?.y, imageNaturalSize?.width, imageNaturalSize?.height]);
+    setDraftRegion(existing);
+    setBoxComment(existing?.label ?? arithmeticFallbackLabel(activeEditFlag));
+    setIsEditingBox(false);
+    setDrawStart(null);
+  }, [activeEditFlag?.id, manualRegions, autoRegions]);
 
   function zoomOut() {
     setZoom((value) => Math.max(50, value - 25));
@@ -1144,7 +1721,7 @@ function ReceiptFilePreview({
   }
 
   function beginDraw(event: React.PointerEvent<HTMLDivElement>) {
-    if (!isEditingBox) return;
+    if (!isEditingBox || !activeEditFlag) return;
     const point = pointerPoint(event);
     if (!point) return;
 
@@ -1155,14 +1732,14 @@ function ReceiptFilePreview({
       y: point.y,
       width: 0.001,
       height: 0.001,
-      label: boxComment.trim() || (selectedFlag ? arithmeticFallbackLabel(selectedFlag) : "Human verified box"),
+      label: boxComment.trim() || arithmeticFallbackLabel(activeEditFlag),
       shape: "box",
       userEdited: true,
     });
   }
 
   function updateDraw(event: React.PointerEvent<HTMLDivElement>) {
-    if (!isEditingBox || !drawStart) return;
+    if (!isEditingBox || !drawStart || !activeEditFlag) return;
     const point = pointerPoint(event);
     if (!point) return;
 
@@ -1171,7 +1748,7 @@ function ReceiptFilePreview({
       y: Math.min(drawStart.y, point.y),
       width: Math.abs(point.x - drawStart.x),
       height: Math.abs(point.y - drawStart.y),
-      label: boxComment.trim() || (selectedFlag ? arithmeticFallbackLabel(selectedFlag) : "Human verified box"),
+      label: boxComment.trim() || arithmeticFallbackLabel(activeEditFlag),
       shape: "box",
       userEdited: true,
     });
@@ -1188,10 +1765,10 @@ function ReceiptFilePreview({
   }
 
   function saveManualBox() {
-    if (!draftRegion || draftRegion.width < 0.005 || draftRegion.height < 0.005) return;
-    onManualRegionChange?.({
+    if (!activeEditFlag || !draftRegion || draftRegion.width < 0.005 || draftRegion.height < 0.005) return;
+    onManualRegionChange(activeEditFlag.id, {
       ...draftRegion,
-      label: boxComment.trim() || (selectedFlag ? arithmeticFallbackLabel(selectedFlag) : draftRegion.label),
+      label: boxComment.trim() || arithmeticFallbackLabel(activeEditFlag),
       shape: "box",
       userEdited: true,
     });
@@ -1199,25 +1776,29 @@ function ReceiptFilePreview({
   }
 
   function clearManualBox() {
-    onManualRegionChange?.(null);
-    setDraftRegion(automaticRegions[0] ?? null);
-    setBoxComment(selectedFlag ? arithmeticFallbackLabel(selectedFlag) : "");
-    setIsEditingBox(false);
+    if (!activeEditFlag) return;
+    onManualRegionChange(activeEditFlag.id, null);
   }
-
-  const visibleRegions = isEditingBox && draftRegion ? [draftRegion] : regions;
 
   return <section className="evidence-panel">
     <div className="evidence-panel-copy">
       <div>
         <p className="eyebrow">EVIDENCE LOCATION</p>
         <h3>Receipt preview</h3>
-        <p>Use the receipt preview to inspect the original upload. The app first uses backend OCR boxes. If they are missing, it tries client OCR to locate the wrong amount. You can still draw a corrected box and comment for final human review.</p>
+        <p>When subtotal plus GST does not match the printed total, the app scans the receipt image rows and draws a box over the detected TOTAL line and its value. You can still correct the box manually.</p>
       </div>
 
-      {canEditBox && <div className="bbox-editor-panel">
+      {triggeredFlags.length > 0 && <div className="bbox-editor-panel">
         <strong>Human bounding-box check</strong>
-        <span>{isEditingBox ? "Drag over the wrong printed amount, then add or edit the comment before saving." : manualRegion ? "Using your manually verified box and comment." : "Use this if OCR missed or misplaced the box."}</span>
+        <span>{isEditingBox ? "Drag over the selected error, then save." : "The app draws the suspected total mismatch automatically. Use this only if the box needs correction."}</span>
+
+        {triggeredFlags.length > 1 && <label>
+          <span>Flag to edit</span>
+          <select value={activeEditFlag?.id ?? ""} onChange={(event) => setEditingFlagId(event.target.value)}>
+            {triggeredFlags.map((flag) => <option key={flag.id} value={flag.id}>{displayFlagTitle(flag)}</option>)}
+          </select>
+        </label>}
+
         <label>
           <span>Box comment</span>
           <textarea
@@ -1231,47 +1812,69 @@ function ReceiptFilePreview({
             rows={3}
           />
         </label>
+
         <div>
-          <button type="button" className="text-button dark" onClick={() => setIsEditingBox((value) => !value)}>{isEditingBox ? "Cancel drawing" : manualRegion ? "Edit box" : "Draw box"}</button>
+          <button
+            type="button"
+            className="text-button dark"
+            disabled={!canEditBox}
+            onClick={() => {
+              setIsEditingBox((value) => {
+                const next = !value;
+                if (next) {
+                  setDraftRegion(null);
+                  setDrawStart(null);
+                }
+                return next;
+              });
+            }}
+          >
+            {isEditingBox ? "Cancel drawing" : manualRegions[activeEditFlag?.id ?? ""] ? "Edit box" : "Draw box"}
+          </button>
           {isEditingBox && <button type="button" className="primary-button compact bbox-save-button" disabled={!draftRegion || draftRegion.width < 0.005 || draftRegion.height < 0.005} onClick={saveManualBox}>Save box</button>}
-          {manualRegion && <button type="button" className="text-button danger-text" onClick={clearManualBox}>Clear</button>}
+          {activeEditFlag && manualRegions[activeEditFlag.id] && <button type="button" className="text-button danger-text" onClick={clearManualBox}>Clear</button>}
         </div>
       </div>}
 
+      <div className="auto-box-status">
+        <strong>{visibleRegionEntries.length > 0 ? "Bounding box ready" : "Bounding box pending"}</strong>
+        <span>{visibleRegionEntries.length > 0
+          ? `${visibleRegionEntries.length} error region${visibleRegionEntries.length === 1 ? "" : "s"} shown. ${detectedRowCount > 0 ? `${detectedRowCount} text rows detected.` : ""}`
+          : detectedRowCount > 0
+            ? "Text rows were detected, but no matching arithmetic error row was selected. Draw the box manually."
+            : "Waiting for the receipt image to load so rows can be detected."}</span>
+        {missingFlags.length > 0 && <small>No box yet for: {missingFlags.map((flag) => displayFlagTitle(flag)).join(", ")}.</small>}
+      </div>
+
       {selectedFlag && <div className={`selected-preview-label ${selectedFlag.status}`}><span>{statusLabel[selectedFlag.status]}</span><strong>{displayFlagTitle(selectedFlag)}</strong><small>{visualEvidenceNote(selectedFlag)}</small></div>}
-      {clientOcrMessage && <div className={`ocr-status ${clientOcrStatus}`}><span>{clientOcrStatus === "running" ? "OCR running" : clientOcrStatus === "done" ? "OCR complete" : "OCR notice"}</span><small>{clientOcrMessage}</small></div>}
     </div>
 
     <div className="receipt-preview-area">
       <div className="receipt-preview-shell">
-        {fileUrl && (imageKind || pdfKind) && <div className="preview-floating-actions" aria-label="Receipt zoom controls">
+        {(signedOpenUrl || imagePreviewUrl || pdfPreviewUrl) && <div className="preview-floating-actions" aria-label="Receipt zoom controls">
           <button type="button" onClick={zoomOut}>−</button>
           <span>{zoom}%</span>
           <button type="button" onClick={zoomIn}>+</button>
           <button type="button" onClick={resetZoom}>Reset</button>
-          <a href={fileUrl} target="_blank" rel="noreferrer">Open</a>
+          {signedOpenUrl && <a href={signedOpenUrl} target="_blank" rel="noreferrer">Open</a>}
         </div>}
 
         <div className="receipt-preview-scroll">
           {!fileUrl && !error && <div className="receipt-preview-placeholder">Loading receipt preview.</div>}
           {error && <div className="receipt-preview-placeholder">{error}</div>}
 
-          {previewUrl && imageKind && <div ref={stageRef} className={`receipt-preview-stage ${isEditingBox ? "drawing-active" : ""}`} style={{ width: `${zoom}%` }}>
+          {imagePreviewUrl && imageKind && <div ref={stageRef} className={`receipt-preview-stage ${isEditingBox ? "drawing-active" : ""}`} style={{ width: `${zoom}%` }}>
             <img
-              src={previewUrl}
+              ref={imageRef}
+              src={imagePreviewUrl}
               alt={`Preview of ${receipt.fileName}`}
               className="receipt-preview-image"
-              onLoad={(event) => {
-                const image = event.currentTarget;
-                if (image.naturalWidth > 0 && image.naturalHeight > 0) {
-                  setImageNaturalSize({ width: image.naturalWidth, height: image.naturalHeight });
-                }
-              }}
+              onLoad={(event) => refreshAutoBoxes(event.currentTarget)}
             />
-            {visibleRegions.length > 0 && <div className="receipt-overlay" aria-hidden="true">
-              {visibleRegions.map((region, index) => <div
-                key={`${region.x}-${region.y}-${index}`}
-                className={`receipt-box ${selectedFlag?.status ?? "pending"} ${region.shape === "circle" ? "circle" : ""} ${region.synthetic ? "synthetic" : ""} ${region.userEdited ? "user-edited" : ""}` }
+            {visibleRegionEntries.length > 0 && <div className="receipt-overlay" aria-hidden="true">
+              {visibleRegionEntries.map(({ flag, region }, index) => <div
+                key={`${flag.id}-${region.x}-${region.y}-${index}`}
+                className={`receipt-box ${flag.status} ${region.shape === "circle" ? "circle" : ""} ${region.synthetic ? "synthetic" : ""} ${region.userEdited ? "user-edited" : ""}` }
                 style={{
                   left: `${region.x * 100}%`,
                   top: `${region.y * 100}%`,
@@ -1279,7 +1882,7 @@ function ReceiptFilePreview({
                   height: `${region.height * 100}%`,
                 }}
               >
-                {region.label && <span>{region.label}</span>}
+                <span>{region.label || displayFlagTitle(flag)}</span>
               </div>)}
             </div>}
             {isEditingBox && <div
@@ -1293,8 +1896,8 @@ function ReceiptFilePreview({
             />}
           </div>}
 
-          {previewUrl && pdfKind && <iframe
-            src={previewUrl}
+          {pdfPreviewUrl && pdfKind && <iframe
+            src={pdfPreviewUrl}
             title={`Preview of ${receipt.fileName}`}
             className="receipt-preview-frame"
             style={{ width: `${zoom}%` }}
@@ -1333,7 +1936,7 @@ function ReceiptDetailModal({ receipt, canEdit, onClose, onChange, onDeleted }: 
     }
   }, [receipt.id]);
 
-  function updateManualRegion(flagId: string | null | undefined, region: EvidenceRegion | null) {
+  function updateManualRegion(flagId: string, region: EvidenceRegion | null) {
     if (!flagId) return;
     setManualRegions((current) => {
       const next = { ...current };
@@ -1379,8 +1982,9 @@ function ReceiptDetailModal({ receipt, canEdit, onClose, onChange, onDeleted }: 
       <ReceiptFilePreview
         receipt={receipt}
         selectedFlag={selectedFlag}
-        manualRegion={selectedFlag ? manualRegions[selectedFlag.id] ?? null : null}
-        onManualRegionChange={(region) => updateManualRegion(selectedFlag?.id, region)}
+        flags={flags}
+        manualRegions={manualRegions}
+        onManualRegionChange={updateManualRegion}
       />
       <ul className="flag-list">{flags.map((flag) => <FlagItem key={flag.id} flag={flag} selected={flag.id === selectedFlag?.id} onSelect={() => setSelectedFlagId(flag.id)} />)}</ul>
 
