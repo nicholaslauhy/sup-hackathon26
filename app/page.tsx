@@ -1277,7 +1277,7 @@ function tsvToClientLines(tsv: unknown, imageWidth: number, imageHeight: number)
     if (confidence !== null && confidence >= 0) current.confidences.push(confidence);
   });
 
-  return [...groups.values()]
+  return Array.from(groups.values())
     .map((group) => ({
       text: group.words.join(" "),
       x: group.left / imageWidth,
@@ -1306,7 +1306,7 @@ function tesseractLinesToClientLines(lines: unknown[], imageWidth: number, image
   if (!Array.isArray(lines) || imageWidth <= 0 || imageHeight <= 0) return [];
 
   return lines
-    .map((line) => {
+    .map((line): ClientOcrLine | null => {
       if (!isRecord(line)) return null;
 
       const text = String(line.text ?? "").trim();

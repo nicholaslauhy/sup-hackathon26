@@ -94,13 +94,14 @@ function findFirstByLabel(lines: MoneyLine[], predicate: (label: string) => bool
 
 function findBestPayableLine(lines: MoneyLine[]) {
   let best: { line: MoneyLine; score: number; index: number } | null = null;
-  lines.forEach((line, index) => {
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index];
     const score = payableKeywordScore(normalized(line.label));
-    if (score < 0) return;
+    if (score < 0) continue;
     if (!best || score > best.score || (score === best.score && index > best.index)) {
       best = { line, score, index };
     }
-  });
+  }
   return best?.line ?? null;
 }
 
