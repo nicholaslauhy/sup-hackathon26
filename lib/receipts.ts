@@ -28,6 +28,16 @@ export type ClaimSubmission = {
   createdAt: string;
 };
 
+export type ClaimHistoryRecord = {
+  id: string;
+  claimType: ReceiptType;
+  fileName: string;
+  finalDecision: FinalDecision;
+  status: string;
+  createdAt: string;
+  reviewedAt: string | null;
+};
+
 async function readJson<T>(response: Response): Promise<T> {
   const body = await response.json();
   if (!response.ok) throw new Error(body.error ?? "The request could not be completed.");
@@ -45,6 +55,12 @@ export async function analyzeReceipt(file: File, claimType: ReceiptType): Promis
 
 export async function getReceipts(): Promise<ReceiptRecord[]> {
   return readJson<{ receipts: ReceiptRecord[] }>(
+    await fetch("/api/receipts", { cache: "no-store" }),
+  ).then((body) => body.receipts);
+}
+
+export async function getClaimHistory(): Promise<ClaimHistoryRecord[]> {
+  return readJson<{ receipts: ClaimHistoryRecord[] }>(
     await fetch("/api/receipts", { cache: "no-store" }),
   ).then((body) => body.receipts);
 }

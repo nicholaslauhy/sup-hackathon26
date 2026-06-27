@@ -4,6 +4,8 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { findProfile } from "@/lib/server/accounts";
 import { RECEIPT_COLUMNS, toReceiptRecord, type ReceiptRow } from "@/lib/server/receipts";
 import { analyzeReceipt, type DuplicateMatch, type FileKind } from "@/lib/analysis/analyze";
+import { claimTypeMismatchMessage } from "@/lib/analysis/claim-type-classifier";
+import { validateSelectedClaimType } from "@/lib/analysis/claim-type-preflight";
 import { contentHash, hammingDistance, perceptualHash } from "@/lib/analysis/hash";
 import type { ReceiptType } from "@/lib/analysis/types";
 
@@ -56,6 +58,21 @@ export async function POST(request: Request) {
   }
 
   const bytes = Buffer.from(await file.arrayBuffer());
+
+  const claimTypeDecision = await validateSelectedClaimType({
+    bytes,
+    fileKind,
+    selectedClaimType: claimType,
+  });
+  if (claimTypeDecision.status === "mismatch") {
+    return NextResponse.json({
+      error: claimTypeMismatchMessage(claimType),
+      detectedType: claimTypeDecision.detectedType,
+      confidence: claimTypeDecision.confidence,
+      reasons: claimTypeDecision.reasons,
+    }, { status: 400 });
+  }
+
   const hash = contentHash(bytes);
   const phash = await perceptualHash(bytes, fileKind);
 
