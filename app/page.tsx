@@ -1054,6 +1054,7 @@ type UserClaimsSummary = {
   pendingCount: number;
   rejectedCount: number;
   tierCounts: Record<Tier, number>;
+  claimTypeCounts: Record<ReceiptType, number>;
   monthlyCounts: number[];
   monthlyTierCounts: Record<Tier, number>[];
 };
@@ -1067,6 +1068,7 @@ function emptyClaimsSummary(name: string, email: string, months: { key: string }
     pendingCount: 0,
     rejectedCount: 0,
     tierCounts: { green: 0, amber: 0, red: 0 },
+    claimTypeCounts: { medical: 0, purchase: 0, grab: 0 },
     monthlyCounts: months.map(() => 0),
     monthlyTierCounts: months.map(() => ({ green: 0, amber: 0, red: 0 })),
   };
@@ -1098,6 +1100,7 @@ function buildUserClaimsSummaries(receipts: ReceiptRecord[], accounts: PublicAcc
     }
     summary.total += 1;
     summary.tierCounts[r.tier] += 1;
+    summary.claimTypeCounts[r.claimType] += 1;
     summary.avgScore += r.score;
     if (r.finalDecision === "pending") summary.pendingCount += 1;
     if (r.finalDecision === "rejected") summary.rejectedCount += 1;
@@ -1235,12 +1238,50 @@ function MemberReceiptsModal({ name, email, receipts, onClose, onChange, onDelet
   </div>;
 }
 
+const CLAIMS_DASHBOARD_VIEW_KEY = "claims-dashboard-view";
+
+function loadStoredDashboardView(): { search: string; sortBy: ClaimsSortId } {
+  if (typeof window === "undefined") return { search: "", sortBy: "total" };
+  try {
+    const raw = window.localStorage.getItem(CLAIMS_DASHBOARD_VIEW_KEY);
+    if (!raw) return { search: "", sortBy: "total" };
+    const parsed = JSON.parse(raw);
+    const sortBy = claimsSortOptions.some((option) => option.id === parsed.sortBy) ? parsed.sortBy : "total";
+    return { search: typeof parsed.search === "string" ? parsed.search : "", sortBy };
+  } catch {
+    return { search: "", sortBy: "total" };
+  }
+}
+
+function downloadClaimsCsv(summaries: UserClaimsSummary[], months: { key: string; label: string }[]) {
+  const header = ["Name", "Email", "Total claims", "Avg score", "Pending", "Rejected", "Low risk", "Some risk", "High risk", ...months.map((m) => m.label)];
+  const rows = summaries.map((s) => [
+    s.name, s.email, s.total, s.avgScore, s.pendingCount, s.rejectedCount,
+    s.tierCounts.green, s.tierCounts.amber, s.tierCounts.red, ...s.monthlyCounts,
+  ]);
+  const csv = [header, ...rows]
+    .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","))
+    .join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `claim-activity-${new Date().toISOString().slice(0, 10)}.csv`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 function UserClaimsDashboard({ accounts }: { accounts: PublicAccount[] }) {
   const [receipts, setReceipts] = useState<ReceiptRecord[] | null>(null);
   const [error, setError] = useState("");
-  const [search, setSearch] = useState("");
-  const [sortBy, setSortBy] = useState<ClaimsSortId>("total");
+  const [initialView] = useState(loadStoredDashboardView);
+  const [search, setSearch] = useState(initialView.search);
+  const [sortBy, setSortBy] = useState<ClaimsSortId>(initialView.sortBy);
   const [selectedMember, setSelectedMember] = useState<{ name: string; email: string } | null>(null);
+
+  useEffect(() => {
+    window.localStorage.setItem(CLAIMS_DASHBOARD_VIEW_KEY, JSON.stringify({ search, sortBy }));
+  }, [search, sortBy]);
 
   useEffect(() => {
     let active = true;
@@ -1272,17 +1313,21 @@ function UserClaimsDashboard({ accounts }: { accounts: PublicAccount[] }) {
       </div>}
     </div>
     {receipts && summaries.length > 0 && <div className="claims-controls">
-      <input
-        type="search"
-        className="claims-search"
-        placeholder="Search by name or email"
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-        aria-label="Search members by name or email"
-      />
+      <div className="claims-search-wrap">
+        <input
+          type="search"
+          className="claims-search"
+          placeholder="Search by name or email"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          aria-label="Search members by name or email"
+        />
+        {search && <button type="button" className="claims-search-clear" aria-label="Clear search" onClick={() => setSearch("")}>×</button>}
+      </div>
       <select className="claims-sort" value={sortBy} onChange={(e) => setSortBy(e.target.value as ClaimsSortId)} aria-label="Sort members by">
         {claimsSortOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
       </select>
+      <button type="button" className="text-button dark claims-export" onClick={() => downloadClaimsCsv(visibleSummaries, months)}>Export CSV</button>
     </div>}
     {error ? <p className="message error" role="alert">{error}</p>
       : !receipts ? <p className="muted">Loading...</p>
@@ -1302,12 +1347,16 @@ function UserClaimsDashboard({ accounts }: { accounts: PublicAccount[] }) {
                   <span className="step-count">{s.total} claim{s.total === 1 ? "" : "s"}</span>
                   <span className="step-count">Avg score {s.avgScore}</span>
                   {s.pendingCount > 0 && <span className="step-count claims-pending-chip">{s.pendingCount} pending</span>}
+                  {s.rejectedCount > 0 && <span className="step-count claims-rejected-chip">{Math.round((s.rejectedCount / s.total) * 100)}% rejected</span>}
                 </div>
               </div>
               <div className="claims-tier-row">
                 <span><em className="tier-dot green" />{s.tierCounts.green} low</span>
                 <span><em className="tier-dot amber" />{s.tierCounts.amber} some</span>
                 <span><em className="tier-dot red" />{s.tierCounts.red} high</span>
+              </div>
+              <div className="claims-type-row">
+                {receiptTypes.map((type) => s.claimTypeCounts[type.id] > 0 && <span key={type.id}>{type.abbreviation} {s.claimTypeCounts[type.id]}</span>)}
               </div>
               <div className="claims-bar-chart">
                 {s.monthlyTierCounts.map((tiers, i) => {
