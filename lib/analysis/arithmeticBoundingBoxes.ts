@@ -63,6 +63,7 @@ function paymentKeywordScore(label: string) {
   if (includesAny(label, ["tendered", "change", "cash", "card", "visa", "master", "amex", "eftpos", "paid", "payment", "received"])) {
     return 100;
   }
+
   return 0;
 }
 
@@ -84,24 +85,29 @@ function isPayableLine(label: string) {
   return payableKeywordScore(label) > 0;
 }
 
-function findFirstByLabel(lines: MoneyLine[], predicate: (label: string) => boolean) {
+function findFirstByLabel(lines: MoneyLine[], predicate: (label: string) => boolean): MoneyLine | null {
   for (const line of lines) {
     const label = normalized(line.label);
     if (predicate(label)) return line;
   }
+
   return null;
 }
 
-function findBestPayableLine(lines: MoneyLine[]) {
+function findBestPayableLine(lines: MoneyLine[]): MoneyLine | null {
   let best: { line: MoneyLine; score: number; index: number } | null = null;
-  for (let index = 0; index < lines.length; index++) {
+
+  for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
     const score = payableKeywordScore(normalized(line.label));
+
     if (score < 0) continue;
+
     if (!best || score > best.score || (score === best.score && index > best.index)) {
       best = { line, score, index };
     }
   }
+
   return best?.line ?? null;
 }
 
@@ -133,6 +139,7 @@ function buildMismatchFlag(options: {
 }): Flag {
   const { title, explanation, calculatedAmount, printedAmount, targetLabel, targetRegion, checked, basis } = options;
   const basisLabel = basis === "subtotal_plus_tax" ? "subtotal plus tax" : "sum of item lines";
+
   return {
     id: "arithmetic-total-mismatch",
     title,
@@ -154,12 +161,12 @@ function buildMismatchFlag(options: {
       ],
       regions: targetRegion
         ? [
-            {
-              ...targetRegion,
-              label: `Mismatch: ${targetLabel} shows ${currency(printedAmount)}. Expected ${currency(calculatedAmount)}.`,
-              shape: "box",
-            },
-          ]
+          {
+            ...targetRegion,
+            label: `Mismatch: ${targetLabel} shows ${currency(printedAmount)}. Expected ${currency(calculatedAmount)}.`,
+            shape: "box",
+          },
+        ]
         : [],
     },
   };
@@ -223,7 +230,7 @@ export function createArithmeticTotalFlags(lines: MoneyLine[]): Flag[] {
     const checked = [
       `Sum of item lines = ${currency(itemSum)}`,
       `Printed ${payable.label} = ${currency(printed)}`,
-      `Ignored payment lines such as tendered / change when computing the expected amount.`,
+      "Ignored payment lines such as tendered / change when computing the expected amount.",
     ];
 
     if (almostEqual(itemSum, printed)) {
