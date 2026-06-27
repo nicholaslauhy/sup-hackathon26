@@ -131,6 +131,8 @@ button,input { font:inherit; } button { cursor:pointer; }
 .score-track { height:9px; border-radius:999px; background:#ffffff33; overflow:hidden; }
 .score-fill { height:100%; border-radius:999px; background:white; }
 .score-value { color:#ffffffde; font-size:11px; font-weight:700; text-align:right; }
+.score-adjusted-note { margin:-12px 0 0; padding:10px 13px; border:1px solid #e7d5ab; border-radius:9px; background:#fbf3e2; color:#75531e; font-size:12px; line-height:1.5; }
+.score-adjusted-note strong { color:#5a4216; }
 .flag-list { margin:0; padding:0; list-style:none; display:flex; flex-direction:column; gap:10px; }
 .flag-item { padding:15px 17px; border:1px solid var(--line); border-left-width:3px; border-radius:10px; background:white; }
 .flag-item.triggered { border-left-color:var(--risk-red); }
@@ -145,6 +147,21 @@ button,input { font:inherit; } button { cursor:pointer; }
 .flag-severity { margin-left:auto; color:var(--muted); font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; }
 .flag-severity.high { color:var(--risk-red); } .flag-severity.medium { color:var(--risk-amber); }
 .flag-item p { margin:0; color:var(--muted); font-size:12px; line-height:1.5; }
+/* Where a flag came from: AI vision model vs. a deterministic tool. */
+.flag-source { padding:3px 8px; border-radius:6px; font-size:10px; font-weight:800; text-transform:uppercase; letter-spacing:.5px; border:1px solid transparent; }
+.flag-source.ai { color:#5a3aa6; background:#ece6fb; border-color:#d8ccf5; }
+.flag-source.tool { color:#1f5a6e; background:#dceef4; border-color:#c4e2ea; }
+.flag-source-dot { width:9px; height:9px; border-radius:3px; display:inline-block; margin-right:6px; vertical-align:middle; }
+.flag-source-dot.ai { background:#7c5ad1; } .flag-source-dot.tool { background:#3a8aa3; }
+.flag-ignored-tag { padding:3px 8px; border-radius:6px; font-size:10px; font-weight:800; text-transform:uppercase; letter-spacing:.5px; color:#75531e; background:#f4e5c7; }
+.flag-item.ignored { opacity:.62; border-left-color:#c2b083; background:#fbfaf5; }
+.flag-item.ignored .flag-head strong { text-decoration:line-through; text-decoration-color:#b9a98a; }
+.flag-ignore-row { margin-top:12px; padding-top:11px; border-top:1px dashed var(--line); display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+.flag-ignore-hint { color:var(--muted); font-size:11px; line-height:1.45; max-width:62%; }
+.ghost-button { padding:8px 13px; border:1px solid #d6c3a0; border-radius:7px; color:#8a6516; background:#fbf3e2; font-size:11px; font-weight:800; cursor:pointer; }
+.ghost-button:hover { background:#f5e9cf; } .ghost-button:disabled { opacity:.6; cursor:wait; }
+.flag-legend { display:flex; align-items:center; gap:16px; margin:0 0 12px; flex-wrap:wrap; font-size:11px; font-weight:700; color:var(--muted); }
+.flag-legend-ignored { color:#8a6516; font-weight:800; }
 .flag-evidence { margin:11px 0 0; display:flex; flex-wrap:wrap; gap:8px 18px; }
 .flag-evidence div { display:flex; flex-direction:column; gap:2px; }
 .flag-evidence dt { color:#8b9893; font-size:10px; text-transform:uppercase; letter-spacing:.5px; }
@@ -1280,27 +1297,6 @@ button.nav-item:hover:not(.active) { color:var(--green); }
   color: var(--muted);
   font-size: 12px;
   line-height: 1.5;
-}
-
-.flag-decision-source {
-  display: block;
-  margin-top: 8px;
-  padding: 4px 8px;
-  border-radius: 6px;
-  font-size: 11px;
-  line-height: 1.45;
-  width: max-content;
-  max-width: 100%;
-}
-
-.flag-decision-source.ai {
-  color: #4a3a73;
-  background: #ece7f6;
-}
-
-.flag-decision-source.external {
-  color: #5a6661;
-  background: #eef1ef;
 }
 
 .flag-view-hint {

@@ -4,8 +4,10 @@
 
 import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Account, PublicAccount, changePassword, createAccount, createFirstAdmin, deleteAccount, getAccounts, getCurrentAccount, hasAnyAccounts, login, logout } from "@/lib/auth";
-import { ClaimHistoryRecord, ClaimSubmission, FinalDecision, ReceiptRecord, analyzeReceipt, deleteReceipt, getClaimHistory, getReceipts, recordDecision } from "@/lib/receipts";
+import { ClaimHistoryRecord, ClaimSubmission, FinalDecision, ReceiptRecord, analyzeReceipt, deleteReceipt, getClaimHistory, getReceipts, recordDecision, setIgnoredFlags } from "@/lib/receipts";
+
 import type { AnalysisResult, Flag, Tier } from "@/lib/analysis/types";
+import { scoreFromFlags, tierFromScore } from "@/lib/analysis/score";
 
 type InputProps = React.InputHTMLAttributes<HTMLInputElement> & { label: string };
 
@@ -193,7 +195,6 @@ const CANONICAL_FLAG_TITLES: Record<string, string> = {
   "pdf-producer": "Created with image/design software",
   "pdf-modified": "Modified after creation",
   arithmetic: "Line-item arithmetic",
-  "round-numbers": "Suspiciously round amounts",
   "font-consistency": "Font & spacing consistency",
   "physical-alteration": "Scratches & physical alteration",
 };
@@ -222,6 +223,23 @@ function visibleFlags(flags: Flag[]): Flag[] {
 function displayFlagTitle(flag: Flag) {
   return canonicalFlagTitle(flag) ?? flag.title;
 }
+
+type FlagSource = "ai" | "tool";
+
+// Where a flag came from, so HR can tell an AI judgement apart from a
+// deterministic tool result. The image-forensics checks are raised by the VLM
+// (see lib/analysis/checks/forensics.ts); everything else is a metadata, hash,
+// OCR or arithmetic tool that runs without a model.
+const AI_FLAG_IDS = new Set(["font-consistency", "physical-alteration"]);
+
+function flagSource(flag: Flag): FlagSource {
+  return AI_FLAG_IDS.has(flag.id) ? "ai" : "tool";
+}
+
+const flagSourceMeta: Record<FlagSource, { label: string; hint: string }> = {
+  ai: { label: "AI vision", hint: "Raised by the AI image-forensics model" },
+  tool: { label: "Automated tool", hint: "Raised by a deterministic metadata, hash, OCR or arithmetic check" },
+};
 
 function parseMoneyAmount(value: unknown) {
   if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -302,7 +320,6 @@ function flagLocation(flag: Flag) {
   if (flag.id === "duplicate") return "Whole uploaded file";
   if (isArithmeticFlag(flag)) return "Receipt amount lines";
   if (flag.id === "font-consistency") return "Text blocks and spacing";
-  if (flag.id === "round-numbers") return "Amount fields";
   return "Receipt evidence";
 }
 
@@ -348,42 +365,6 @@ function displayFlagExplanation(flag: Flag) {
   return flag.explanation;
 }
 
-// Which engine decided a flag. AI-driven checks (the vision forensics, and the
-// arithmetic / round-amount checks when the AI receipt model supplied the
-// figures) are attributed to the OpenAI model and the explanation above is the
-// model's own curated assessment. Every other check is deterministic, so we name
-// the specific external library that produced the decision.
-function flagDecisionSource(flag: Flag): { ai: boolean; tool: string } {
-  if (flag.id === "font-consistency" || flag.id === "physical-alteration") {
-    const model = isRecord(flag.evidence) && typeof flag.evidence.model === "string" ? flag.evidence.model : "gpt-4o";
-    return { ai: true, tool: `OpenAI vision model (${model})` };
-  }
-  if (flag.id === "arithmetic" || flag.id === "round-numbers") {
-    const engine = isRecord(flag.evidence) ? flag.evidence.decisionEngine : undefined;
-    if (engine === "ai-receipt") return { ai: true, tool: "OpenAI receipt model (gpt-5-mini)" };
-    if (engine === "pdfjs") return { ai: false, tool: "pdfjs-dist (embedded PDF text layer)" };
-    return { ai: false, tool: "tesseract.js (OCR)" };
-  }
-  if (flag.id === "duplicate") return { ai: false, tool: "SHA-256 content hashing + perceptual image hashing" };
-  if (flag.id.endsWith("-reference")) return { ai: false, tool: "content & perceptual hash comparison against the reference bucket" };
-  if (flag.id === "exif-editor" || flag.id === "exif-camera") return { ai: false, tool: "exifr (EXIF metadata reader)" };
-  if (flag.id === "pdf-producer" || flag.id === "pdf-modified") return { ai: false, tool: "pdf-lib (PDF metadata reader)" };
-  if (flag.id === "is-receipt") return { ai: false, tool: "tesseract.js / pdfjs text extraction + sharp document-shape analysis" };
-  return { ai: false, tool: "an external tool" };
-}
-
-function flagDecisionMessage(flag: Flag): string {
-  const { ai, tool } = flagDecisionSource(flag);
-  if (flag.status === "pending") {
-    return ai
-      ? `AI not yet run — awaiting the ${tool}.`
-      : `Not yet determined — the external tool (${tool}) could not read enough to decide.`;
-  }
-  return ai
-    ? `AI decision — assessed by the ${tool} (the explanation above is the model's own reasoning).`
-    : `No AI used — an external tool was used: ${tool}.`;
-}
-
 function ScoreMeter({ score, tier }: { score: number; tier: Tier }) {
   return <div className="score-meter">
     <div className="score-track"><div className={`score-fill ${tier}`} style={{ width: `${score}%` }} /></div>
@@ -391,19 +372,29 @@ function ScoreMeter({ score, tier }: { score: number; tier: Tier }) {
   </div>;
 }
 
-function FlagItem({ flag, selected = false, onSelect }: { flag: Flag; selected?: boolean; onSelect?: () => void }) {
+function FlagItem({ flag, selected = false, onSelect, ignored = false, ignoreBusy = false, onToggleIgnore }: {
+  flag: Flag;
+  selected?: boolean;
+  onSelect?: () => void;
+  ignored?: boolean;
+  ignoreBusy?: boolean;
+  onToggleIgnore?: () => void;
+}) {
   const evidence = evidenceEntries(flag);
   const regionCount = flagRegions(flag).length;
+  const source = flagSource(flag);
+  const sourceMeta = flagSourceMeta[source];
 
-  return <li className={`flag-item ${flag.status} ${selected ? "selected" : ""}`}>
+  return <li className={`flag-item ${flag.status} ${selected ? "selected" : ""} ${ignored ? "ignored" : ""}`}>
     <button type="button" className="flag-select-button" onClick={onSelect} disabled={!onSelect}>
       <span className="flag-head">
         <span className={`flag-status ${flag.status}`}>{statusLabel[flag.status]}</span>
+        <span className={`flag-source ${source}`} title={sourceMeta.hint}>{sourceMeta.label}</span>
+        {ignored && <span className="flag-ignored-tag">Ignored — false positive</span>}
         <strong>{displayFlagTitle(flag)}</strong>
         <span className={`flag-severity ${flag.severity}`}>{flag.severity}</span>
       </span>
       <span className="flag-copy">{displayFlagExplanation(flag)}</span>
-      <span className={`flag-decision-source ${flagDecisionSource(flag).ai ? "ai" : "external"}`}>{flagDecisionMessage(flag)}</span>
       <span className="flag-location-box">
         <span>Where to check</span>
         <strong>{regionCount > 0 ? visualRegionLabel(flag, regionCount) : flagLocation(flag)}</strong>
@@ -412,6 +403,14 @@ function FlagItem({ flag, selected = false, onSelect }: { flag: Flag; selected?:
       {regionCount > 0 && <span className="flag-view-hint">View on receipt</span>}
     </button>
     {isArithmeticFlag(flag) ? <ArithmeticEvidenceDetails flag={flag} /> : evidence.length > 0 && <dl className="flag-evidence">{evidence.map(([key, value]) => <div key={key}><dt>{formatEvidenceKey(key)}</dt><dd>{evidenceValue(value)}</dd></div>)}</dl>}
+    {onToggleIgnore && <div className="flag-ignore-row">
+      <span className="flag-ignore-hint">{ignored
+        ? "Restored flags count toward the claim's risk again."
+        : `This concern was raised by ${source === "ai" ? "the AI" : "an automated tool"}. Ignore it if it's a false positive.`}</span>
+      <button type="button" className={ignored ? "text-button dark" : "ghost-button"} disabled={ignoreBusy} onClick={onToggleIgnore}>
+        {ignoreBusy ? "Saving..." : ignored ? "Restore flag" : "Ignore flag"}
+      </button>
+    </div>}
   </li>;
 }
 
@@ -1993,11 +1992,23 @@ function ReceiptDetailModal({ receipt, canEdit, onClose, onChange, onDeleted }: 
   onDeleted: (id: string) => void;
 }) {
   const [busy, setBusy] = useState<"authentic" | "rejected" | "delete" | null>(null);
+  const [ignoreBusyId, setIgnoreBusyId] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [error, setError] = useState("");
   const result: AnalysisResult = receipt.result;
   const flags = visibleFlags(result.flags);
-  const meta = tierMeta[result.tier];
+  const ignoredFlags = receipt.ignoredFlags ?? [];
+  const ignoredSet = new Set(ignoredFlags);
+  const activeTriggered = flags.filter((flag) => flag.status === "triggered" && !ignoredSet.has(flag.id)).length;
+  const ignoredCount = flags.filter((flag) => flag.status === "triggered" && ignoredSet.has(flag.id)).length;
+  // HR-adjusted risk: re-score over the full flag set minus the ones HR ignored.
+  // The stored result.score/tier (the original AI assessment) is left untouched
+  // as an audit record; this only changes what the modal shows. With nothing
+  // ignored, this equals the stored score.
+  const adjustedScore = scoreFromFlags(result.flags.filter((flag) => !ignoredSet.has(flag.id)));
+  const adjustedTier = tierFromScore(adjustedScore);
+  const scoreAdjusted = ignoredCount > 0 && adjustedScore !== result.score;
+  const meta = tierMeta[adjustedTier];
   const [selectedFlagId, setSelectedFlagId] = useState<string | null>(() => flags.find(hasVisualEvidence)?.id ?? flags[0]?.id ?? null);
   const selectedFlag = flags.find((flag) => flag.id === selectedFlagId) ?? flags[0] ?? null;
   const [manualRegions, setManualRegions] = useState<Record<string, EvidenceRegion>>({});
@@ -2041,14 +2052,28 @@ function ReceiptDetailModal({ receipt, canEdit, onClose, onChange, onDeleted }: 
     catch (reason) { setError(reason instanceof Error ? reason.message : "Unable to delete the receipt."); setBusy(null); }
   }
 
+  async function toggleIgnore(flagId: string) {
+    setIgnoreBusyId(flagId); setError("");
+    const next = ignoredSet.has(flagId)
+      ? ignoredFlags.filter((id) => id !== flagId)
+      : [...ignoredFlags, flagId];
+    try { onChange(await setIgnoredFlags(receipt.id, next)); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "Unable to update the flag."); }
+    finally { setIgnoreBusyId(null); }
+  }
+
   return <div className="modal-overlay" role="dialog" aria-modal="true" onClick={onClose}>
     <div className="modal-card" onClick={(event) => event.stopPropagation()}>
       <button className="modal-close" aria-label="Close" onClick={onClose}>×</button>
 
-      <div className={`result-banner ${result.tier}`}>
+      <div className={`result-banner ${adjustedTier}`}>
         <div><span className="result-tier-pill">{meta.label}</span><h2>{receipt.fileName}</h2><p>{result.summary}</p></div>
-        <ScoreMeter score={result.score} tier={result.tier} />
+        <ScoreMeter score={adjustedScore} tier={adjustedTier} />
       </div>
+
+      {scoreAdjusted && <p className="score-adjusted-note">
+        HR-adjusted risk after ignoring {ignoredCount} flag{ignoredCount === 1 ? "" : "s"}. Original AI assessment: <strong>{result.score}/100 · {tierMeta[result.tier].label}</strong> (kept on record).
+      </p>}
 
       <div className="receipt-timeframe">
         <div><span>Checked on</span><strong>{formatDateTime(receipt.createdAt)}</strong></div>
@@ -2061,7 +2086,21 @@ function ReceiptDetailModal({ receipt, canEdit, onClose, onChange, onDeleted }: 
         manualRegions={manualRegions}
         onManualRegionChange={updateManualRegion}
       />
-      <ul className="flag-list">{flags.map((flag) => <FlagItem key={flag.id} flag={flag} selected={flag.id === selectedFlag?.id} onSelect={() => setSelectedFlagId(flag.id)} />)}</ul>
+      {canEdit && <div className="flag-legend">
+        <span><em className="flag-source-dot ai" />AI vision</span>
+        <span><em className="flag-source-dot tool" />Automated tool</span>
+        {ignoredCount > 0 && <span className="flag-legend-ignored">{ignoredCount} flag{ignoredCount === 1 ? "" : "s"} ignored as false positive{ignoredCount === 1 ? "" : "s"} · {activeTriggered} active concern{activeTriggered === 1 ? "" : "s"} left</span>}
+      </div>}
+      <ul className="flag-list">{flags.map((flag) => <FlagItem
+        key={flag.id}
+        flag={flag}
+        selected={flag.id === selectedFlag?.id}
+        onSelect={() => setSelectedFlagId(flag.id)}
+        ignored={ignoredSet.has(flag.id)}
+        ignoreBusy={ignoreBusyId === flag.id}
+        onToggleIgnore={canEdit && flag.status === "triggered" ? () => toggleIgnore(flag.id) : undefined}
+      />)}</ul>
+
 
       {canEdit ? <div className="modal-decision">
         <div className="modal-decision-head">
