@@ -1051,9 +1051,26 @@ type UserClaimsSummary = {
   email: string;
   total: number;
   avgScore: number;
+  pendingCount: number;
+  rejectedCount: number;
   tierCounts: Record<Tier, number>;
   monthlyCounts: number[];
+  monthlyTierCounts: Record<Tier, number>[];
 };
+
+function emptyClaimsSummary(name: string, email: string, months: { key: string }[]): UserClaimsSummary {
+  return {
+    name,
+    email,
+    total: 0,
+    avgScore: 0,
+    pendingCount: 0,
+    rejectedCount: 0,
+    tierCounts: { green: 0, amber: 0, red: 0 },
+    monthlyCounts: months.map(() => 0),
+    monthlyTierCounts: months.map(() => ({ green: 0, amber: 0, red: 0 })),
+  };
+}
 
 function buildUserClaimsSummaries(receipts: ReceiptRecord[], accounts: PublicAccount[], months: { key: string }[]): UserClaimsSummary[] {
   const cutoff = new Date();
@@ -1062,7 +1079,7 @@ function buildUserClaimsSummaries(receipts: ReceiptRecord[], accounts: PublicAcc
 
   const byUser = new Map<string, UserClaimsSummary>();
   for (const account of accounts) {
-    byUser.set(account.email, { name: account.name, email: account.email, total: 0, avgScore: 0, tierCounts: { green: 0, amber: 0, red: 0 }, monthlyCounts: months.map(() => 0) });
+    byUser.set(account.email, emptyClaimsSummary(account.name, account.email, months));
   }
   for (const r of receipts) {
     const created = new Date(r.createdAt);
@@ -1070,20 +1087,45 @@ function buildUserClaimsSummaries(receipts: ReceiptRecord[], accounts: PublicAcc
     const email = r.uploader?.email ?? "unknown";
     const name = r.uploader?.name ?? "Unknown";
     if (!byUser.has(email)) {
-      byUser.set(email, { name, email, total: 0, avgScore: 0, tierCounts: { green: 0, amber: 0, red: 0 }, monthlyCounts: months.map(() => 0) });
+      byUser.set(email, emptyClaimsSummary(name, email, months));
     }
     const summary = byUser.get(email)!;
     const monthKey = `${created.getFullYear()}-${String(created.getMonth() + 1).padStart(2, "0")}`;
     const monthIndex = months.findIndex((m) => m.key === monthKey);
-    if (monthIndex >= 0) summary.monthlyCounts[monthIndex] += 1;
+    if (monthIndex >= 0) {
+      summary.monthlyCounts[monthIndex] += 1;
+      summary.monthlyTierCounts[monthIndex][r.tier] += 1;
+    }
     summary.total += 1;
     summary.tierCounts[r.tier] += 1;
     summary.avgScore += r.score;
+    if (r.finalDecision === "pending") summary.pendingCount += 1;
+    if (r.finalDecision === "rejected") summary.rejectedCount += 1;
   }
 
   return Array.from(byUser.values())
     .sort((a, b) => b.total - a.total || a.name.localeCompare(b.name))
     .map((summary) => ({ ...summary, avgScore: summary.total ? Math.round(summary.avgScore / summary.total) : 0 }));
+}
+
+const claimsSortOptions = [
+  { id: "total", label: "Most claims" },
+  { id: "avgScore", label: "Highest avg score" },
+  { id: "pending", label: "Most pending" },
+  { id: "rejected", label: "Most rejected" },
+  { id: "name", label: "Name (A-Z)" },
+] as const;
+type ClaimsSortId = typeof claimsSortOptions[number]["id"];
+
+function sortClaimsSummaries(summaries: UserClaimsSummary[], sortBy: ClaimsSortId): UserClaimsSummary[] {
+  const sorted = [...summaries];
+  switch (sortBy) {
+    case "avgScore": return sorted.sort((a, b) => b.avgScore - a.avgScore || a.name.localeCompare(b.name));
+    case "pending": return sorted.sort((a, b) => b.pendingCount - a.pendingCount || a.name.localeCompare(b.name));
+    case "rejected": return sorted.sort((a, b) => b.rejectedCount - a.rejectedCount || a.name.localeCompare(b.name));
+    case "name": return sorted.sort((a, b) => a.name.localeCompare(b.name));
+    default: return sorted.sort((a, b) => b.total - a.total || a.name.localeCompare(b.name));
+  }
 }
 
 function monthKeyOf(dateValue: string) {
@@ -1133,6 +1175,7 @@ function MemberReceiptsModal({ name, email, receipts, onClose, onChange, onDelet
 }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [tab, setTab] = useState<"recent" | "history">("recent");
+  const [openGroup, setOpenGroup] = useState<string | null>(null);
   const selected = receipts.find((r) => r.id === selectedId) ?? null;
 
   useEffect(() => {
@@ -1146,6 +1189,11 @@ function MemberReceiptsModal({ name, email, receipts, onClose, onChange, onDelet
   const earlier = useMemo(() => receipts.filter((r) => new Date(r.createdAt) < cutoff), [receipts, cutoff]);
   const monthGroups = useMemo(() => groupReceiptsByKey(recent, (r) => monthKeyOf(r.createdAt)), [recent]);
   const yearGroups = useMemo(() => groupReceiptsByKey(earlier, (r) => String(new Date(r.createdAt).getFullYear())), [earlier]);
+  const activeGroups = tab === "recent" ? monthGroups : yearGroups;
+
+  useEffect(() => {
+    setOpenGroup(activeGroups.length === 1 ? activeGroups[0].key : null);
+  }, [tab, activeGroups]);
 
   return <div className="modal-overlay" role="dialog" aria-modal="true" onClick={onClose}>
     <div className="modal-card" onClick={(event) => event.stopPropagation()}>
@@ -1161,14 +1209,20 @@ function MemberReceiptsModal({ name, email, receipts, onClose, onChange, onDelet
         ? (monthGroups.length === 0
           ? <div className="empty-state"><span>00</span><p>No claims in the past 12 months.</p></div>
           : monthGroups.map((group) => <div className="claims-month-group" key={group.key}>
-              <h3 className="claims-month-heading">{monthLabelOf(group.key)} <span className="step-count">{group.receipts.length}</span></h3>
-              <ReceiptGroupTable receipts={group.receipts} onReview={setSelectedId} />
+              <button type="button" className="claims-month-box" onClick={() => setOpenGroup(openGroup === group.key ? null : group.key)}>
+                <span className="claims-month-heading">{monthLabelOf(group.key)}</span>
+                <span className="step-count">{group.receipts.length} claim{group.receipts.length === 1 ? "" : "s"}</span>
+              </button>
+              {openGroup === group.key && <ReceiptGroupTable receipts={group.receipts} onReview={setSelectedId} />}
             </div>))
         : (yearGroups.length === 0
           ? <div className="empty-state"><span>00</span><p>No claims from earlier years.</p></div>
           : yearGroups.map((group) => <div className="claims-month-group" key={group.key}>
-              <h3 className="claims-month-heading">{group.key} <span className="step-count">{group.receipts.length}</span></h3>
-              <ReceiptGroupTable receipts={group.receipts} onReview={setSelectedId} />
+              <button type="button" className="claims-month-box" onClick={() => setOpenGroup(openGroup === group.key ? null : group.key)}>
+                <span className="claims-month-heading">{group.key}</span>
+                <span className="step-count">{group.receipts.length} claim{group.receipts.length === 1 ? "" : "s"}</span>
+              </button>
+              {openGroup === group.key && <ReceiptGroupTable receipts={group.receipts} onReview={setSelectedId} />}
             </div>))}
     </div>
     {selected && <ReceiptDetailModal
@@ -1185,6 +1239,7 @@ function UserClaimsDashboard({ accounts }: { accounts: PublicAccount[] }) {
   const [receipts, setReceipts] = useState<ReceiptRecord[] | null>(null);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
+  const [sortBy, setSortBy] = useState<ClaimsSortId>("total");
   const [selectedMember, setSelectedMember] = useState<{ name: string; email: string } | null>(null);
 
   useEffect(() => {
@@ -1203,22 +1258,32 @@ function UserClaimsDashboard({ accounts }: { accounts: PublicAccount[] }) {
   const visibleSummaries = query
     ? summaries.filter((s) => s.name.toLowerCase().includes(query) || s.email.toLowerCase().includes(query))
     : summaries;
-  const activeSummaries = visibleSummaries.filter((s) => s.total > 0);
+  const activeSummaries = sortClaimsSummaries(visibleSummaries.filter((s) => s.total > 0), sortBy);
   const emptySummaries = visibleSummaries.filter((s) => s.total === 0);
+  const currentMonth = months[months.length - 1];
+  const currentMonthTotal = summaries.reduce((sum, s) => sum + s.monthlyCounts[s.monthlyCounts.length - 1], 0);
 
   return <section className="surface wide">
     <div className="history-head">
       <div><p className="eyebrow">CLAIM ACTIVITY</p><h2>Past 12 months by member</h2></div>
-      {receipts && <span className="step-count">{visibleSummaries.length} of {summaries.length} member{summaries.length === 1 ? "" : "s"}</span>}
+      {receipts && <div className="history-head-stats">
+        <span className="step-count">{visibleSummaries.length} of {summaries.length} member{summaries.length === 1 ? "" : "s"}</span>
+        {summaries.length > 0 && <span className="step-count claims-month-chip">{currentMonth.label} claims: {currentMonthTotal}</span>}
+      </div>}
     </div>
-    {receipts && summaries.length > 0 && <input
-      type="search"
-      className="claims-search"
-      placeholder="Search by name or email"
-      value={search}
-      onChange={(e) => setSearch(e.target.value)}
-      aria-label="Search members by name or email"
-    />}
+    {receipts && summaries.length > 0 && <div className="claims-controls">
+      <input
+        type="search"
+        className="claims-search"
+        placeholder="Search by name or email"
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        aria-label="Search members by name or email"
+      />
+      <select className="claims-sort" value={sortBy} onChange={(e) => setSortBy(e.target.value as ClaimsSortId)} aria-label="Sort members by">
+        {claimsSortOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+      </select>
+    </div>}
     {error ? <p className="message error" role="alert">{error}</p>
       : !receipts ? <p className="muted">Loading...</p>
       : summaries.length === 0 ? <div className="empty-state"><span>00</span><p>No members yet.</p></div>
@@ -1236,6 +1301,7 @@ function UserClaimsDashboard({ accounts }: { accounts: PublicAccount[] }) {
                 <div className="claims-card-stats">
                   <span className="step-count">{s.total} claim{s.total === 1 ? "" : "s"}</span>
                   <span className="step-count">Avg score {s.avgScore}</span>
+                  {s.pendingCount > 0 && <span className="step-count claims-pending-chip">{s.pendingCount} pending</span>}
                 </div>
               </div>
               <div className="claims-tier-row">
@@ -1244,10 +1310,19 @@ function UserClaimsDashboard({ accounts }: { accounts: PublicAccount[] }) {
                 <span><em className="tier-dot red" />{s.tierCounts.red} high</span>
               </div>
               <div className="claims-bar-chart">
-                {s.monthlyCounts.map((count, i) => <div className="claims-bar-col" key={months[i].key}>
-                  <div className="claims-bar" style={{ height: count ? `${Math.max(6, (count / maxMonthly) * 64)}px` : "2px" }} title={`${months[i].label}: ${count}`} />
-                  <span className="claims-bar-label">{months[i].label}</span>
-                </div>)}
+                {s.monthlyTierCounts.map((tiers, i) => {
+                  const count = s.monthlyCounts[i];
+                  return <div className="claims-bar-col" key={months[i].key}>
+                    <div className="claims-bar" style={{ height: count ? `${Math.max(6, (count / maxMonthly) * 64)}px` : "2px" }} title={`${months[i].label}: ${count} (${tiers.green} low, ${tiers.amber} some, ${tiers.red} high)`}>
+                      {count > 0 && (["red", "amber", "green"] as Tier[]).map((tier) => tiers[tier] > 0 && <div
+                        key={tier}
+                        className={`claims-bar-segment ${tier}`}
+                        style={{ height: `${(tiers[tier] / count) * 100}%` }}
+                      />)}
+                    </div>
+                    <span className="claims-bar-label">{months[i].label}</span>
+                  </div>;
+                })}
               </div>
             </button>)}
             {activeSummaries.length % 2 === 1 && <div className="claims-card claims-card-placeholder" aria-hidden="true" />}
